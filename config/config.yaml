@@ -1,0 +1,40 @@
+name: Original-Model
+
+data:
+  dataset: METR-LA
+  batch-size: 32
+  METR-LA:
+    mean: 54.40605
+    std: 19.493473
+  PEMS-BAY:
+    mean: 62.735012
+    std: 9.438203
+
+train:
+  device: 'cuda:0'
+  epochs: 100
+  scheduler: ReduceLROnPlateau
+  ReduceLROnPlateau:
+    factor: 0.5
+    patience: 2
+    threshold: 0.001
+    min_lr: 0.00001
+
+optimizer:
+  name: Adam
+  Adam:
+    lr: 0.01
+    weight_decay: 0.0002
+
+loss:
+  name: MSELoss
+
+model:
+  name: STGCN
+  STGCN:
+    n_predictions: 12
+    n_history: 12
+    k_hop: 3
+    t_cnv_krnl_sz: 3
+    dims: [[1, 32, 64], [64, 32, 128]]
+    dropout: 0.0
