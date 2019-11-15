@@ -2,6 +2,12 @@ import numpy as np
 from scipy.sparse.linalg import eigs
 
 
+def get_cheb_filters(graph: np.ndarray, k_hop: int):
+    # convert a directed graph to an undirected graph
+    graph = np.minimum(graph, graph.transpose())
+    return cheb_poly_approx(scaled_laplacian(graph), k_hop, graph.shape[0])
+
+
 def scaled_laplacian(w):
     """
     Normalized graph Laplacian function.

@@ -2,7 +2,7 @@ name: Original-Model
 
 data:
   dataset: METR-LA
-  batch-size: 32
+  batch-size: 64
   METR-LA:
     mean: 54.40605
     std: 19.493473
@@ -13,28 +13,41 @@ data:
 train:
   device: 'cuda:0'
   epochs: 100
-  scheduler: ReduceLROnPlateau
-  ReduceLROnPlateau:
-    factor: 0.5
-    patience: 2
-    threshold: 0.001
-    min_lr: 0.00001
 
 optimizer:
   name: Adam
   Adam:
-    lr: 0.01
+    lr: 0.001
+    weight_decay: 0.0002
+  RMSProp:
+    lr: 0.001
     weight_decay: 0.0002
 
 loss:
   name: MSELoss
 
 model:
-  name: STGCN
+  name: DCRNN
   STGCN:
-    n_predictions: 12
     n_history: 12
     k_hop: 3
     t_cnv_krnl_sz: 3
     dims: [[1, 32, 64], [64, 32, 128]]
     dropout: 0.0
+  DCRNN:
+    n_hist: 12
+    n_pred: 12
+    hidden_size: 64
+    k_hop: 3
+    n_rnn_layers: 2
+    input_dim: 1
+    output_dim: 1
+    cl_decay_steps: 3000
+
+scheduler:
+  name: ReduceLROnPlateau
+  ReduceLROnPlateau:
+    factor: 0.1
+    patience: 0
+    threshold: 0.005
+    min_lr: 0.00001

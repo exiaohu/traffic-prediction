@@ -7,16 +7,16 @@ import yaml
 from models import create_model
 from utils import train_model, get_dataloaders, get_optimizer, get_loss, get_graph, get_scheduler
 from utils.data import ZScoreScaler
-from utils.graph import scaled_laplacian, cheb_poly_approx
+from utils.graph import get_cheb_filters
 
 
 def train(_config: dict):
     dataset = _config['data']['dataset']
     model_name = _config['model']['name']
     optimizer_name = _config['optimizer']['name']
-    scheduler_name = _config['train']['scheduler']
+    scheduler_name = _config['scheduler']['name']
 
-    model = create_model(_config['model'][model_name])
+    model = create_model(model_name, _config['model'][model_name])
     mean, std = _config['data'][dataset]['mean'], _config['data'][dataset]['std']
     scaler = ZScoreScaler(mean, std)
     dls = get_dataloaders(dataset, _config['data']['batch-size'])
@@ -25,10 +25,10 @@ def train(_config: dict):
 
     optimizer = get_optimizer(optimizer_name, model.parameters(), **_config['optimizer'][optimizer_name])
 
-    scheduler = get_scheduler(scheduler_name, optimizer, **_config['train'][scheduler_name])
+    scheduler = get_scheduler(scheduler_name, optimizer, **_config['scheduler'][scheduler_name])
 
-    graph = get_graph(dataset)
-    graph = cheb_poly_approx(scaled_laplacian(graph), _config['model'][model_name]['k_hop'], graph.shape[0])
+    # a directed graph indicating the distance from one location to another
+    graph = get_cheb_filters(get_graph(dataset), _config['model'][model_name]['k_hop'])
 
     save_folder = os.path.join('saves', dataset, _config['name'])
 

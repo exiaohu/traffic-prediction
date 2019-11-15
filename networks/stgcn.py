@@ -1,7 +1,7 @@
 from typing import Tuple, List
 
 import torch
-from torch import nn
+from torch import nn, Tensor
 
 from .base import CausalConv1d, ChebNet
 
@@ -17,7 +17,7 @@ class TemporalConvLayer(nn.Module):
 
         self.f_in, self.f_out, self.kernel_size = f_in, f_out, kernel_size
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: Tensor) -> Tensor:
         """
         Temporal causal convolution layer.
         :param inputs: tensor, [B, T, N, F_in]
@@ -31,7 +31,8 @@ class TemporalConvLayer(nn.Module):
             ori_input = self.alignement(ori_input)
         elif self.f_in < self.f_out:
             zero_shape = ori_input.shape[:3] + (self.f_out - self.f_in,)
-            ori_input = torch.cat([ori_input, torch.zeros(zero_shape, device=ori_input.device)], dim=3)
+            zeros = torch.zeros(zero_shape, dtype=inputs.dtype, device=ori_input.device)
+            ori_input = torch.cat([ori_input, zeros], dim=3)
 
         # shape => [B * N, F_in, T]
         inputs = inputs.permute(0, 2, 3, 1).reshape(-1, self.f_in, t)
@@ -57,7 +58,7 @@ class SpatialConvLayer(nn.Module):
 
         self.f_in, self.f_out = f_in, f_out
 
-    def forward(self, inputs: torch.Tensor, cheb_filters: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: Tensor, cheb_filters: Tensor) -> Tensor:
         """
         Spatial graph convolution layer.
         :param inputs: tensor, [B, T, N, F_in]
@@ -71,7 +72,8 @@ class SpatialConvLayer(nn.Module):
             ori_input = self.alignement(inputs)
         elif self.f_in < self.f_out:
             zero_shape = inputs.shape[:3] + (self.f_out - self.f_in,)
-            ori_input = torch.cat([inputs, torch.zeros(zero_shape, device=inputs.device)], dim=3)
+            zeros = torch.zeros(zero_shape, dtype=inputs.dtype, device=inputs.device)
+            ori_input = torch.cat([inputs, zeros], dim=3)
         else:
             ori_input = inputs
 
@@ -101,7 +103,7 @@ class STConvBlock(nn.Module):
         self.bn = nn.BatchNorm1d(f_out)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, inputs: torch.Tensor, cheb_filters: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: Tensor, cheb_filters: Tensor) -> Tensor:
         """
         forward of spatio-temporal convolutional block
         :param inputs: tensor, [B, T, N, F_in]
@@ -114,7 +116,7 @@ class STConvBlock(nn.Module):
 
 
 class StackedSTConvBlocks(nn.ModuleList):
-    def forward(self, inputs: torch.Tensor, cheb_filters: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: Tensor, cheb_filters: Tensor) -> Tensor:
         h = inputs
         for module in self:
             h = module(h, cheb_filters)
@@ -127,9 +129,9 @@ class OutputLayer(nn.Module):
         self.t_conv1 = TemporalConvLayer(f_in, f_in, t_cnv_krnl_sz)
         self.bn = nn.BatchNorm1d(f_in)
         self.t_conv2 = TemporalConvLayer(f_in, f_in, t_cnv_krnl_sz)
-        self.out = nn.Linear(f_in, 1)
+        self.out = nn.Sequential(nn.Linear(f_in, 1), nn.ReLU())
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: Tensor) -> Tensor:
         """
         Output layer: temporal convolution layers attach with one fully connected layer,
         which map outputs of the last st_conv block to a single-step prediction.
@@ -142,14 +144,14 @@ class OutputLayer(nn.Module):
             self.bn(outputs.reshape(b * t * n, -1)).reshape(b, t, n, -1))), 1)
 
 
-class STGCNSingleStep(nn.Module):
+class STGCN(nn.Module):
     def __init__(self,
                  n_history: int,
                  k_hop: int,
                  t_cnv_krnl_sz: int,
                  dims: List[Tuple[int, int, int]],
                  dropout: float):
-        super(STGCNSingleStep, self).__init__()
+        super(STGCN, self).__init__()
         self.stacked_st_blocks = StackedSTConvBlocks()
         for dim in dims:
             self.stacked_st_blocks.append(STConvBlock(k_hop, t_cnv_krnl_sz, dim, dropout))
@@ -157,7 +159,7 @@ class STGCNSingleStep(nn.Module):
 
         self.out = OutputLayer(dims[-1][-1], (n_history + 1) // 2)
 
-    def forward(self, inputs: torch.Tensor, cheb_filters: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: Tensor, cheb_filters: Tensor) -> Tensor:
         """
         STGCN product single step prediction
         :param inputs: tensor, [B, T, N, F]
@@ -165,24 +167,3 @@ class STGCNSingleStep(nn.Module):
         :return: tensor, [B, N, 1]
         """
         return self.out(self.stacked_st_blocks(inputs, cheb_filters))
-
-
-class STGCN(nn.Module):
-    def __init__(self, n_predictions: int, **kwargs):
-        super(STGCN, self).__init__()
-        self.n_predictions = n_predictions
-        self.model = STGCNSingleStep(**kwargs)
-
-    def forward(self, inputs: torch.Tensor, cheb_filters: torch.Tensor) -> torch.Tensor:
-        """
-        STGCN product multiple step prediction
-        :param inputs: tensor, [B, T, N, F]
-        :param cheb_filters: tensor, [N, K_hop, N]
-        :return: tensor, [B, N_predictions, N, 1]
-        """
-        _, t, _, _ = inputs.shape
-        h = inputs.clone()
-        for i in range(self.n_predictions):
-            prediction = self.model(h[:, i:i + t, ...], cheb_filters)
-            h = torch.cat([h, prediction.unsqueeze(1)], 1)
-        return h[:, self.n_predictions:]

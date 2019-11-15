@@ -11,6 +11,8 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from networks.dcrnn import DCRNN
+from networks.stgcn import STGCN
 from .evaluate import evaluate
 
 
@@ -60,6 +62,9 @@ def train_model(model: nn.Module,
 
     since = time.perf_counter()
 
+    if isinstance(model, STGCN):
+        model = MultiStepWraper(model)
+
     model = model.to(device)
     criterion = criterion.to(device)
 
@@ -84,7 +89,13 @@ def train_model(model: nn.Module,
                     targets = scaler.transform(targets).to(device)
 
                     with torch.set_grad_enabled(phase == 'train'):
-                        outputs = model(inputs, graph)
+                        if isinstance(model, MultiStepWraper):
+                            outputs = model(inputs, graph, targets, (phase == 'train'))
+                        elif isinstance(model, DCRNN):
+                            i_targets = targets if phase == 'train' else None
+                            batch_seen = step + epoch * (
+                                    len(dataloaders['train'].dataset) // dataloaders['train'].batch_size)
+                            outputs = model(inputs, graph, i_targets, batch_seen)
 
                         loss = criterion(outputs, targets)
 
@@ -144,3 +155,40 @@ def save_model(path: str, **save_dict):
 def get_graph(dataset: str):
     _, _, g = load_graph_data(os.path.join('data', dataset, 'adj_mx.pkl'))
     return g
+
+
+class MultiStepWraper(nn.Module):
+
+    def __init__(self, model: nn.Module):
+        """
+        wrap a model to make multi-step predictions.
+        :param model: map inputs to a single predicting result
+        """
+        super(MultiStepWraper, self).__init__()
+        self.model = model
+
+    def forward(self,
+                inputs: torch.Tensor,
+                graph_filters: torch.Tensor,
+                targets: torch.Tensor,
+                is_train: bool):
+        """
+        generate multi-step predictions from single-step predicting method
+        :param inputs: tensor, [B, N_hist, N, F_in]
+        :param graph_filters: tensor, [N, K_hop, N]
+        :param targets: tensor, multi-step prediction targets, [B, N_pred, N, F_out]
+        :param is_train: whether on train mode or not
+        :return: tensor, with the same shape as `targets`
+        """
+        _, n_hist, _, _ = inputs.shape
+        _, n_pred, _, _ = targets.shape
+        h, preds = inputs.clone(), list()
+        for i in range(n_pred):
+            prediction = self.model(h[:, i:i + n_hist, ...], graph_filters)
+            preds.append(prediction)
+            if not is_train:
+                h = torch.cat([h, prediction.unsqueeze(1)], 1)
+            else:
+                h = torch.cat([h, targets[:, i:i + 1]], 1)
+                h.requires_grad_()
+        return torch.stack(preds, 1)
