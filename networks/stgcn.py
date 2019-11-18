@@ -6,14 +6,30 @@ from torch import nn, Tensor
 from .base import CausalConv1d, ChebNet
 
 
+class ResShortcut(nn.Module):
+    def __init__(self, f_in: int, f_out: int):
+        super(ResShortcut, self).__init__()
+        if f_in > f_out:
+            self.alignment = nn.Linear(f_in, f_out)
+        self.f_in, self.f_out = f_in, f_out
+
+    def forward(self, inputs):
+        # residual connection, first map the input to the same shape as output
+        if self.f_in > self.f_out:
+            return self.alignment(inputs)
+        elif self.f_in < self.f_out:
+            zero_shape = inputs.shape[:-1] + (self.f_out - self.f_in,)
+            zeros = torch.zeros(zero_shape, dtype=inputs.dtype, device=inputs.device)
+            return torch.cat([inputs, zeros], dim=-1)
+        return inputs
+
+
 class TemporalConvLayer(nn.Module):
-    def __init__(self, f_in: int, f_out: int, kernel_size: int = 2):
+    def __init__(self, f_in: int, f_out: int, kernel_size: int):
         super(TemporalConvLayer, self).__init__()
         self.causal_conv = CausalConv1d(f_in, 2 * f_out, kernel_size)
         self.sigmoid = nn.Sigmoid()
-
-        if f_in > f_out:
-            self.alignement = nn.Linear(f_in, f_out)
+        self.shortcut = ResShortcut(f_in, f_out)
 
         self.f_in, self.f_out, self.kernel_size = f_in, f_out, kernel_size
 
@@ -25,36 +41,23 @@ class TemporalConvLayer(nn.Module):
         """
         b, t, n, _ = inputs.shape
 
-        # residual connection, first map the input to the same shape as output
-        ori_input = inputs[:, self.kernel_size - 1:t, :, :]
-        if self.f_in > self.f_out:
-            ori_input = self.alignement(ori_input)
-        elif self.f_in < self.f_out:
-            zero_shape = ori_input.shape[:3] + (self.f_out - self.f_in,)
-            zeros = torch.zeros(zero_shape, dtype=inputs.dtype, device=ori_input.device)
-            ori_input = torch.cat([ori_input, zeros], dim=3)
+        x_res = self.shortcut(inputs[:, self.kernel_size - 1:, :, :])
 
         # shape => [B * N, F_in, T]
         inputs = inputs.permute(0, 2, 3, 1).reshape(-1, self.f_in, t)
 
-        # equal shape => [B * N, F_out, T - kernel_size + 1]
-        p, q = self.causal_conv(inputs).split(self.f_out, dim=1)
+        # equal shape => [B * N, 2 * F_out, T - kernel_size + 1] => [B, T - kernel_size + 1, N, 2 * F_out]
+        outputs = self.causal_conv(inputs).reshape(b, n, 2 * self.f_out, -1).permute(0, 3, 1, 2)
 
-        # reorder output and input to [B, T', N, F']
-        p = p.reshape(b, n, self.f_out, -1).permute(0, 3, 1, 2)
-        q = q.reshape(b, n, self.f_out, -1).permute(0, 3, 1, 2)
-
-        return (p + ori_input) * self.sigmoid(q)
+        return (outputs[..., :self.f_out] + x_res) * self.sigmoid(outputs[..., -self.f_out:])
 
 
 class SpatialConvLayer(nn.Module):
     def __init__(self, f_in: int, f_out: int, k_hop: int):
         super(SpatialConvLayer, self).__init__()
         self.g_conv = ChebNet(f_in, f_out, k_hop)
-        self.activation = nn.ReLU()
-
-        if f_in > f_out:
-            self.alignement = nn.Linear(f_in, f_out)
+        self.relu = nn.ReLU()
+        self.shortcut = ResShortcut(f_in, f_out)
 
         self.f_in, self.f_out = f_in, f_out
 
@@ -65,26 +68,16 @@ class SpatialConvLayer(nn.Module):
         :param cheb_filters: tensor, [N, K_hop, N]
         :return: tensor, [B, T, N, F_out]
         """
-        b, t, n, _ = inputs.shape
-
-        # residual connection, first map the input to the same shape as output
-        if self.f_in > self.f_out:
-            ori_input = self.alignement(inputs)
-        elif self.f_in < self.f_out:
-            zero_shape = inputs.shape[:3] + (self.f_out - self.f_in,)
-            zeros = torch.zeros(zero_shape, dtype=inputs.dtype, device=inputs.device)
-            ori_input = torch.cat([inputs, zeros], dim=3)
-        else:
-            ori_input = inputs
-
-        outputs = self.g_conv(inputs.reshape(b * t, n, -1), cheb_filters).reshape(b, t, n, -1)
-        return self.activation(outputs + ori_input)
+        x_res = self.shortcut(inputs)
+        outputs = self.g_conv(inputs, cheb_filters)
+        return self.relu(outputs + x_res)
 
 
 class STConvBlock(nn.Module):
     def __init__(self,
                  k_hop: int,
                  t_cnv_krnl_sz: int,
+                 n_node: int,
                  channels: Tuple[int, int, int],
                  dropout: float):
         """
@@ -92,6 +85,7 @@ class STConvBlock(nn.Module):
         and one spatial graph convolution layer in the middle.
         :param k_hop: length of Chebychev polynomial, i.e., kernel size of spatial convolution
         :param t_cnv_krnl_sz: kernel size of temporal convolution
+        :param n_node: the number of nodes
         :param channels: three integers, define each of the sub-blocks
         :param dropout: dropout
         """
@@ -100,7 +94,7 @@ class STConvBlock(nn.Module):
         self.t_conv1 = TemporalConvLayer(f_in, f_m, t_cnv_krnl_sz)
         self.s_conv = SpatialConvLayer(f_m, f_m, k_hop)
         self.t_conv2 = TemporalConvLayer(f_m, f_out, t_cnv_krnl_sz)
-        self.bn = nn.BatchNorm1d(f_out)
+        self.ln = nn.LayerNorm([n_node, f_out])
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, inputs: Tensor, cheb_filters: Tensor) -> Tensor:
@@ -110,38 +104,31 @@ class STConvBlock(nn.Module):
         :param cheb_filters: tensor, [N, K_hop, N]
         :return: tensor, [B, T, N, F_out]
         """
-        outputs = self.t_conv2(self.s_conv(self.t_conv1(inputs), cheb_filters))
-        b, t, n, _ = outputs.shape
-        return self.dropout(self.bn(outputs.reshape(b * t * n, -1)).reshape(b, t, n, -1))
-
-
-class StackedSTConvBlocks(nn.ModuleList):
-    def forward(self, inputs: Tensor, cheb_filters: Tensor) -> Tensor:
-        h = inputs
-        for module in self:
-            h = module(h, cheb_filters)
-        return h
+        outputs = self.t_conv1(inputs)
+        outputs = self.s_conv(outputs, cheb_filters)
+        outputs = self.t_conv2(outputs)
+        return self.dropout(self.ln(outputs))
 
 
 class OutputLayer(nn.Module):
-    def __init__(self, f_in: int, t_cnv_krnl_sz: int):
+    def __init__(self, f_in: int, t_cnv_krnl_sz: int, n_node: int):
         super(OutputLayer, self).__init__()
         self.t_conv1 = TemporalConvLayer(f_in, f_in, t_cnv_krnl_sz)
-        self.bn = nn.BatchNorm1d(f_in)
-        self.t_conv2 = TemporalConvLayer(f_in, f_in, t_cnv_krnl_sz)
+        self.ln = nn.LayerNorm([n_node, f_in])
+        self.t_conv2 = TemporalConvLayer(f_in, f_in, 1)
         self.out = nn.Sequential(nn.Linear(f_in, 1), nn.ReLU())
 
     def forward(self, inputs: Tensor) -> Tensor:
         """
         Output layer: temporal convolution layers attach with one fully connected layer,
         which map outputs of the last st_conv block to a single-step prediction.
-        :param inputs: tensor, [B, T, N, F]
+        :param inputs: tensor, [B, 1, N, F]
         :return: tensor, [B, N, 1]
         """
         outputs = self.t_conv1(inputs)
-        b, t, n, _ = outputs.shape
-        return torch.mean(self.out(self.t_conv2(
-            self.bn(outputs.reshape(b * t * n, -1)).reshape(b, t, n, -1))), 1)
+        outputs = self.ln(outputs)
+        outputs = self.t_conv2(outputs)
+        return self.out(outputs).squeeze(1)
 
 
 class STGCN(nn.Module):
@@ -149,15 +136,15 @@ class STGCN(nn.Module):
                  n_history: int,
                  k_hop: int,
                  t_cnv_krnl_sz: int,
+                 n_node: int,
                  dims: List[Tuple[int, int, int]],
                  dropout: float):
         super(STGCN, self).__init__()
-        self.stacked_st_blocks = StackedSTConvBlocks()
-        for dim in dims:
-            self.stacked_st_blocks.append(STConvBlock(k_hop, t_cnv_krnl_sz, dim, dropout))
-            n_history -= 2 * (t_cnv_krnl_sz - 1)
+        self.st_blocks = nn.ModuleList([STConvBlock(k_hop, t_cnv_krnl_sz, n_node, dim, dropout) for dim in dims])
 
-        self.out = OutputLayer(dims[-1][-1], (n_history + 1) // 2)
+        n_history -= 2 * (t_cnv_krnl_sz - 1) * len(dims)
+
+        self.out = OutputLayer(dims[-1][-1], n_history, n_node)
 
     def forward(self, inputs: Tensor, cheb_filters: Tensor) -> Tensor:
         """
@@ -166,4 +153,7 @@ class STGCN(nn.Module):
         :param cheb_filters: [N, K_hop, N]
         :return: tensor, [B, N, 1]
         """
-        return self.out(self.stacked_st_blocks(inputs, cheb_filters))
+        outputs = inputs
+        for _, st_block in enumerate(self.st_blocks):
+            outputs = st_block(outputs, cheb_filters)
+        return self.out(outputs)

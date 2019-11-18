@@ -1,31 +1,40 @@
+from typing import Union
+
 import numpy as np
-from scipy.sparse.linalg import eigs
+import scipy.sparse as sp
+import torch
+from scipy.sparse.linalg import eigsh
 
 
-def get_cheb_filters(graph: np.ndarray, k_hop: int):
-    # convert a directed graph to an undirected graph
-    graph = np.minimum(graph, graph.transpose())
-    return cheb_poly_approx(scaled_laplacian(graph), k_hop, graph.shape[0])
+def normalized_laplacian(w: np.ndarray):
+    w = sp.coo_matrix(w)
+    d = np.array(w.sum(1))
+    d_inv_sqrt = np.power(d, -0.5).flatten()
+    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
+    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
+    return sp.eye(w.shape[0]) - w.dot(d_mat_inv_sqrt).T.dot(d_mat_inv_sqrt).tocoo()
 
 
-def scaled_laplacian(w):
-    """
-    Normalized graph Laplacian function.
-    :param w: np.ndarray, [n_route, n_route], weighted adjacency matrix of G.
-    :return: np.ndarray, [n_route, n_route].
-    """
-    # d ->  diagonal degree matrix
-    n, d = w.shape[0], np.sum(w, axis=1)
-    # L -> graph Laplacian
-    lp = -w
-    lp[np.diag_indices_from(lp)] = d
-    for i in range(n):
-        for j in range(n):
-            if (d[i] > 0) and (d[j] > 0):
-                lp[i, j] = lp[i, j] / np.sqrt(d[i] * d[j])
-    # lambda_max \approx 2.0, the largest eigenvalues of L.
-    lambda_max = eigs(lp, k=1, which='LR')[0][0].real
-    return 2 * lp / lambda_max - np.identity(n)
+def random_walk_matrix(w):
+    w = sp.coo_matrix(w)
+    d = np.array(w.sum(1))
+    d_inv = np.power(d, -1).flatten()
+    d_inv[np.isinf(d_inv)] = 0.
+    d_mat_inv = sp.diags(d_inv)
+    return d_mat_inv.dot(w).tocoo()
+
+
+def scaled_laplacian(w: np.ndarray, lambda_max: Union[float, None] = 2., undirected: bool = True):
+    if undirected:
+        w = np.maximum(w, w.T)
+    l = normalized_laplacian(w)
+    if lambda_max is None:
+        lambda_max, _ = eigsh(l, 1, which='LM')
+        lambda_max = lambda_max[0]
+    m, _ = l.shape
+    i = sp.identity(m, format='coo', dtype=l.dtype)
+    l = (2 / lambda_max * l) - i
+    return l.tocoo()
 
 
 def cheb_poly_approx(lp, k_hop, n):
@@ -64,3 +73,15 @@ def first_approx(w, n):
     sinv_d = np.sqrt(np.linalg.inv(np.diag(d)))
     # refer to Eq.5
     return np.identity(n) + np.matmul(np.matmul(sinv_d, a), sinv_d)
+
+
+def convert_scipy_to_torch_sparse(w: sp.coo_matrix):
+    """
+    build pytorch sparse tensor from scipy sparse matrix
+    reference: https://stackoverflow.com/questions/50665141
+    :return:
+    """
+    shape = w.shape
+    i = torch.LongTensor(np.vstack((w.row, w.col)).astype(int))
+    v = torch.FloatTensor(w.data)
+    return torch.sparse.FloatTensor(i, v, torch.Size(shape))

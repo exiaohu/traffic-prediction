@@ -2,26 +2,24 @@ import copy
 import os
 import pickle
 import time
-from typing import Dict
 
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
 from torch import nn, optim
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from networks.dcrnn import DCRNN
-from networks.stgcn import STGCN
+from .data import ZScoreScaler, get_datasets, get_dataloaders
 from .evaluate import evaluate
+
+
+def get_number_of_parameters(model: nn.Module):
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    return sum([np.prod(p.size()) for p in model_parameters])
 
 
 def get_scheduler(name, optimizer, **kwargs):
     return getattr(optim.lr_scheduler, name)(optimizer, **kwargs)
-
-
-def get_loss(name, **kwargs):
-    return getattr(nn, name)(**kwargs)
 
 
 def get_optimizer(name: str, parameters, **kwargs):
@@ -47,30 +45,30 @@ def load_pickle(pickle_file):
 
 
 def train_model(model: nn.Module,
-                dataloaders: Dict[str, DataLoader],
-                criterion: nn.Module,
+                dataset: str,
+                batch_size: int,
                 optimizer,
                 scheduler,
-                graph: np.ndarray,
                 folder: str,
-                scaler,
+                trainer,
                 epochs: int,
                 device: str):
+    datasets = get_datasets(dataset)
+    dataloaders = get_dataloaders(datasets, batch_size)
+    scaler = ZScoreScaler(datasets['train'].std[0], datasets['train'].mean[0])
+
     phases = ['train', 'val', 'test']
 
     writer = SummaryWriter(folder)
 
     since = time.perf_counter()
 
-    if isinstance(model, STGCN):
-        model = MultiStepWraper(model)
-
     model = model.to(device)
-    criterion = criterion.to(device)
 
     save_dict, best_criterion = {'model_state_dict': copy.deepcopy(model.state_dict()), 'epoch': 0}, 0
 
-    graph = torch.tensor(graph, device=device, dtype=torch.float32)
+    print(model)
+    print(f'Trainable parameters: {get_number_of_parameters(model)}.')
 
     try:
         for epoch in range(epochs):
@@ -85,19 +83,16 @@ def train_model(model: nn.Module,
                 steps, predictions, running_targets = 0, list(), list()
                 tqdm_loader = tqdm(enumerate(dataloaders[phase]))
                 for step, (inputs, targets) in tqdm_loader:
-                    inputs = scaler.transform(inputs).to(device)
-                    targets = scaler.transform(targets).to(device)
+                    running_targets.append(targets.numpy())
+
+                    with torch.no_grad():
+                        inputs[..., 0] = scaler.transform(inputs[..., 0])
+                        inputs = inputs.to(device)
+                        targets = scaler.transform(targets)
+                        targets = targets.to(device)
 
                     with torch.set_grad_enabled(phase == 'train'):
-                        if isinstance(model, MultiStepWraper):
-                            outputs = model(inputs, graph, targets, (phase == 'train'))
-                        elif isinstance(model, DCRNN):
-                            i_targets = targets if phase == 'train' else None
-                            batch_seen = step + epoch * (
-                                    len(dataloaders['train'].dataset) // dataloaders['train'].batch_size)
-                            outputs = model(inputs, graph, i_targets, batch_seen)
-
-                        loss = criterion(outputs, targets)
+                        outputs, loss = trainer.train(inputs, targets, phase)
 
                         if phase == 'train':
                             optimizer.zero_grad()
@@ -105,8 +100,7 @@ def train_model(model: nn.Module,
                             optimizer.step()
 
                     with torch.no_grad():
-                        predictions.append(scaler.inverse_transform(outputs.detach().cpu().numpy()))
-                        running_targets.append(scaler.inverse_transform(targets.detach().cpu().numpy()))
+                        predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
 
                     running_loss[phase] += loss * len(targets)
                     steps += len(targets)
@@ -115,7 +109,7 @@ def train_model(model: nn.Module,
                         f'{phase:5} epoch: {epoch:3}, {phase:5} loss: {running_loss[phase] / steps:3.6}')
 
                     # For the issue that the CPU memory increases while training. DO NOT know why, but it works.
-                    torch.cuda.empty_cache()
+                    # torch.cuda.empty_cache()
 
                 # 性能
                 scores = evaluate(np.concatenate(running_targets), np.concatenate(predictions))
@@ -130,9 +124,9 @@ def train_model(model: nn.Module,
             scheduler.step(running_loss['train'])
 
             for metric in running_metrics['train'].keys():
-                writer.add_scalars(metric, {
-                    f'{phase} {metric}': running_metrics[phase][metric] for phase in phases},
-                                   global_step=epoch)
+                for phase in phases:
+                    for key, val in running_metrics[phase][metric].items():
+                        writer.add_scalars(f'{metric}/{key}', {f'{phase}': val}, global_step=epoch)
             writer.add_scalars('Loss', {
                 f'{phase} loss': running_loss[phase] / len(dataloaders[phase].dataset) for phase in phases},
                                global_step=epoch)
@@ -170,23 +164,22 @@ class MultiStepWraper(nn.Module):
     def forward(self,
                 inputs: torch.Tensor,
                 graph_filters: torch.Tensor,
-                targets: torch.Tensor,
-                is_train: bool):
+                n_pred: int,
+                targets: torch.Tensor = None):
         """
         generate multi-step predictions from single-step predicting method
         :param inputs: tensor, [B, N_hist, N, F_in]
         :param graph_filters: tensor, [N, K_hop, N]
+        :param n_pred: the number of predictions
         :param targets: tensor, multi-step prediction targets, [B, N_pred, N, F_out]
-        :param is_train: whether on train mode or not
         :return: tensor, with the same shape as `targets`
         """
         _, n_hist, _, _ = inputs.shape
-        _, n_pred, _, _ = targets.shape
         h, preds = inputs.clone(), list()
         for i in range(n_pred):
-            prediction = self.model(h[:, i:i + n_hist, ...], graph_filters)
+            prediction = self.model(h[:, i:i + n_hist], graph_filters)
             preds.append(prediction)
-            if not is_train:
+            if targets is None:
                 h = torch.cat([h, prediction.unsqueeze(1)], 1)
             else:
                 h = torch.cat([h, targets[:, i:i + 1]], 1)

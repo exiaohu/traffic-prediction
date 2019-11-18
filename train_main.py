@@ -5,30 +5,25 @@ import shutil
 import yaml
 
 from models import create_model
-from utils import train_model, get_dataloaders, get_optimizer, get_loss, get_graph, get_scheduler
-from utils.data import ZScoreScaler
-from utils.graph import get_cheb_filters
+from utils import train_model, get_optimizer, get_loss, get_scheduler
 
 
 def train(_config: dict):
+    print(_config)
     dataset = _config['data']['dataset']
     model_name = _config['model']['name']
     optimizer_name = _config['optimizer']['name']
     scheduler_name = _config['scheduler']['name']
 
-    model = create_model(model_name, _config['model'][model_name])
-    mean, std = _config['data'][dataset]['mean'], _config['data'][dataset]['std']
-    scaler = ZScoreScaler(mean, std)
-    dls = get_dataloaders(dataset, _config['data']['batch-size'])
-
-    loss = get_loss(_config['loss']['name'])
+    model, trainer = create_model(model_name,
+                                  dataset,
+                                  get_loss(_config['loss']['name']),
+                                  _config['model'][model_name],
+                                  _config['train']['device'])
 
     optimizer = get_optimizer(optimizer_name, model.parameters(), **_config['optimizer'][optimizer_name])
 
     scheduler = get_scheduler(scheduler_name, optimizer, **_config['scheduler'][scheduler_name])
-
-    # a directed graph indicating the distance from one location to another
-    graph = get_cheb_filters(get_graph(dataset), _config['model'][model_name]['k_hop'])
 
     save_folder = os.path.join('saves', dataset, _config['name'])
 
@@ -39,13 +34,12 @@ def train(_config: dict):
         yaml.safe_dump(_config, _f)
 
     train_model(model=model,
-                dataloaders=dls,
-                criterion=loss,
+                dataset=dataset,
+                batch_size=_config['data']['batch-size'],
                 optimizer=optimizer,
                 scheduler=scheduler,
-                graph=graph,
                 folder=save_folder,
-                scaler=scaler,
+                trainer=trainer,
                 **_config['train'])
 
 

@@ -1,6 +1,46 @@
 import torch
-from torch import nn
+from torch import nn, Tensor, sparse
 from torch.nn import functional as F
+
+
+class DiffusionGraphConv(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, num_nodes: int, max_diffusion_step: int):
+        super(DiffusionGraphConv, self).__init__()
+        self._num_nodes = num_nodes
+        self._max_diffusion_step = max_diffusion_step
+        self.linear = nn.Linear(input_dim * (max_diffusion_step + 1), output_dim)
+
+    @staticmethod
+    def _concat(x, x_):
+        x_ = torch.unsqueeze(x_, 0)
+        return torch.cat([x, x_], dim=0)
+
+    def forward(self,
+                inputs: Tensor,
+                scaled_laplacian: Tensor):
+        # Reshape input and state to (batch_size, num_nodes, input_dim)
+        batch_size, num_nodes, input_dim = inputs.shape
+
+        x = inputs
+        x0 = torch.transpose(x, dim0=0, dim1=1)
+        x0 = torch.transpose(x0, dim0=1, dim1=2).reshape(num_nodes, -1)  # (num_nodes, input_dim, batch_size)
+        x = torch.unsqueeze(x0, dim=0)
+
+        if self._max_diffusion_step == 0:
+            pass
+        else:
+            x1 = sparse.mm(scaled_laplacian, x0)
+            x = self._concat(x, x1)
+            for k in range(2, self._max_diffusion_step + 1):
+                x2 = 2 * sparse.mm(scaled_laplacian, x1) - x0
+                x = self._concat(x, x2)
+                x1, x0 = x2, x1
+
+        x = torch.reshape(x, shape=[-1, self._num_nodes, input_dim, batch_size])
+        x = torch.transpose(x, dim0=0, dim1=3)  # (batch_size, num_nodes, input_dim, num_matrices)
+        x = torch.reshape(x, shape=[batch_size, self._num_nodes, input_dim * (self._max_diffusion_step + 1)])
+
+        return self.linear(x)
 
 
 class ChebNet(nn.Module):
@@ -8,19 +48,17 @@ class ChebNet(nn.Module):
         super(ChebNet, self).__init__()
         self.theta = nn.Linear(k_hop * f_in, f_out)
 
-    def forward(self, signals: torch.Tensor, supports: torch.Tensor) -> torch.Tensor:
+    def forward(self, signals: Tensor, supports: Tensor) -> Tensor:
         """
         implement of ChebNet
-        :param signals: input signals, Tensor, [B, N, F_in]
+        :param signals: input signals, Tensor, [*, N, F_in]
         :param supports: pre-calculated Chebychev polynomial filters, Tensor, [N, K_hop, N]
         :return: Tensor, [B, N, F_out]
         """
-        b, n, _ = signals.shape
         # shape => [B, N, K, F_in]
-        tmp = supports.matmul(signals.unsqueeze(1))
-
+        tmp = supports.matmul(signals.unsqueeze(-3))
         # shape => [B, N, F_out]
-        return self.theta(tmp.reshape(b, n, -1))
+        return self.theta(tmp.reshape(tmp.shape[:-2] + (-1,)))
 
 
 class CausalConv1d(nn.Conv1d):
@@ -40,10 +78,10 @@ class CausalConv1d(nn.Conv1d):
 
         self.__padding = (kernel_size - 1) * dilation
 
-    def forward(self, input):
+    def forward(self, inputs):
         """
-
-        :param input: tensor, [N, C_{in}, L_{in}]
+        :param inputs: tensor, [N, C_{in}, L_{in}]
         :return: tensor, [N, C_{out}, L_{out}]
         """
-        return super(CausalConv1d, self).forward(F.pad(input, [self.__padding, 0]))[:, :, :-self.__padding]
+        outputs = super(CausalConv1d, self).forward(F.pad(inputs, [self.__padding, 0]))
+        return outputs[:, :, :outputs.shape[-1] - self.__padding]

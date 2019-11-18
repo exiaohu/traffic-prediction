@@ -8,51 +8,49 @@ from .base import ChebNet
 
 
 class DCGRUCell(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int, k_hop: int):
+    def __init__(self, input_size: int, hidden_size: int, num_node: int, k_hop: int, proj_num: int = None):
         super(DCGRUCell, self).__init__()
+        self.num_node = num_node
         self.hidden_size = hidden_size
 
-        self.reset_gate_g_conv = ChebNet(input_size + hidden_size, hidden_size, k_hop)
-        self.reset_gate_sigmoid = nn.Sigmoid()
+        self.ru_gate_g_conv = ChebNet(input_size + hidden_size, hidden_size * 2, k_hop)
+        self.candidate_g_conv = ChebNet(input_size + hidden_size, hidden_size, k_hop)
 
-        self.update_gate_g_conv = ChebNet(input_size + hidden_size, hidden_size, k_hop)
-        self.update_gate_sigmoid = nn.Sigmoid()
+        if proj_num is not None:
+            self.out = nn.Linear(hidden_size, proj_num)
 
-        self.update_state_g_conv = ChebNet(input_size + hidden_size, hidden_size, k_hop)
-        self.update_state_tanh = nn.Tanh()
-
-        self.out = nn.Linear(hidden_size, input_size)
-
-    def forward(self, inputs: Tensor, graph_filters: Tensor, states: Tensor = None) -> Tuple[Tensor, Tensor]:
-        """
-        gru cell implemented by replacing matrix multiple with Graph Convolution Network
-        :param inputs: tensor, [B, N, input_size]
-        :param graph_filters: tensor, [N, K_hop, N]
-        :param states: tensor, [B, N, hidden_size]
-        :return: output, [B, N, input_size]
-            hidden_state, tensor, [B, N, state_size]
-        """
+    def forward(self, inputs: Tensor, graph: Tensor, states: Tensor = None) -> Tuple[Tensor, Tensor]:
         if states is None:
             zero_size = inputs.shape[:2] + (self.hidden_size,)
             states = torch.zeros(zero_size, dtype=inputs.dtype, device=inputs.device)
 
-        input_state = torch.cat([inputs, states], -1)
+        ru = torch.sigmoid(self.ru_gate_g_conv(torch.cat([inputs, states], -1), graph))
+        r, u = ru.split(self.hidden_size, -1)
+        c = torch.tanh(self.candidate_g_conv(torch.cat([inputs, r * states], -1), graph))
+        new_state = u * states + (1 - u) * c
 
-        r = self.reset_gate_sigmoid(self.reset_gate_g_conv(input_state, graph_filters))
-        u = self.update_gate_sigmoid(self.update_gate_g_conv(input_state, graph_filters))
-        c = torch.cat([inputs, torch.mul(r, states)], -1)
-        c = self.update_state_tanh(self.update_state_g_conv(c, graph_filters))
-        new_state = torch.mul(u, states) + torch.mul(1 - u, c)
+        outputs = new_state
+        if hasattr(self, 'out'):
+            outputs = self.out(outputs)
 
-        return self.out(new_state), new_state
+        return outputs, new_state
 
 
 class StackedDCGRUCell(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int, k_hop: int, n_rnn_layers: int):
+    def __init__(self, input_size: int, hidden_size: int, num_node: int, k_hop: int, n_rnn_layers: int,
+                 proj_num: int = None):
         super(StackedDCGRUCell, self).__init__()
         self.n_rnn_layers = n_rnn_layers
         self.hidden_size = hidden_size
-        self.dcgru_layers = nn.ModuleList([DCGRUCell(input_size, hidden_size, k_hop) for _ in range(n_rnn_layers)])
+        dcgrus = [DCGRUCell(input_size, hidden_size, num_node, k_hop)]
+        for _ in range(1, n_rnn_layers - 1):
+            dcgrus.append(DCGRUCell(hidden_size, hidden_size, num_node, k_hop))
+        if proj_num is not None:
+            dcgrus.append(DCGRUCell(hidden_size, hidden_size, num_node, k_hop, proj_num=proj_num))
+        else:
+            dcgrus.append(DCGRUCell(hidden_size, hidden_size, num_node, k_hop))
+
+        self.dcgrus = nn.ModuleList(dcgrus)
 
     def forward(self,
                 inputs: Tensor,
@@ -71,7 +69,7 @@ class StackedDCGRUCell(nn.Module):
             zero_size = (self.n_rnn_layers,) + inputs.shape[:2] + (self.hidden_size,)
             hidden_states = torch.zeros(zero_size, dtype=inputs.dtype, device=inputs.device)
         outputs, new_hidden_states = inputs, list()
-        for idx, dcgru in enumerate(self.dcgru_layers):
+        for idx, dcgru in enumerate(self.dcgrus):
             outputs, hidden_state = dcgru(outputs, graph_filters, hidden_states[idx])
             new_hidden_states.append(hidden_state)
 
@@ -83,6 +81,7 @@ class DCRNN(nn.Module):
                  n_hist: int,
                  n_pred: int,
                  hidden_size: int,
+                 num_nodes: int,
                  k_hop: int,
                  n_rnn_layers: int,
                  input_dim: int,
@@ -93,8 +92,8 @@ class DCRNN(nn.Module):
         self.n_hist = n_hist
         self.n_pred = n_pred
         self.output_dim = output_dim
-        self.encoder = StackedDCGRUCell(input_dim, hidden_size, k_hop, n_rnn_layers)
-        self.decoder = StackedDCGRUCell(output_dim, hidden_size, k_hop, n_rnn_layers)
+        self.encoder = StackedDCGRUCell(input_dim, hidden_size, num_nodes, k_hop, n_rnn_layers)
+        self.decoder = StackedDCGRUCell(output_dim, hidden_size, num_nodes, k_hop, n_rnn_layers, proj_num=output_dim)
 
     def forward(self, inputs: Tensor, graph_filters: Tensor, targets: Tensor = None, batch_seen: int = None) -> Tensor:
         """
