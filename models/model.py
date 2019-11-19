@@ -1,11 +1,11 @@
 from typing import Tuple
 
-import torch
 from torch import Tensor, nn
 
 from networks.dcrnn import DCRNN
+from networks.fc_lstm import FCLSTM
 from networks.stgcn import STGCN
-from utils import get_graph, scaled_laplacian, cheb_poly_approx
+from utils import get_graph, scaled_laplacian, convert_scipy_to_torch_sparse
 
 
 def create_model(name: str, dataset: str, loss, config: dict, device):
@@ -14,9 +14,11 @@ def create_model(name: str, dataset: str, loss, config: dict, device):
     elif name == 'DCRNN':
         model = DCRNN(**config)
         graph = scaled_laplacian(get_graph(dataset), lambda_max=None)
-        graph = cheb_poly_approx(graph.todense(), config['k_hop'], graph.shape[0])
-        graph = torch.tensor(graph, dtype=torch.float32, device=device)
+        graph = convert_scipy_to_torch_sparse(graph).to(device)
         return model, DCRNNTrainer(model, loss, graph)
+    elif name == 'FCLSTM':
+        model = FCLSTM(**config)
+        return model, FCLSTMTrainer(model, loss)
     else:
         raise ValueError(f'{name} is not implemented.')
 
@@ -31,15 +33,25 @@ class Trainer:
 
 
 class DCRNNTrainer(Trainer):
-    def __init__(self, model: DCRNN, loss, graph_filters: Tensor):
+    def __init__(self, model: DCRNN, loss, graph: Tensor):
         super(DCRNNTrainer, self).__init__(model, loss)
-        self.graph_filters = graph_filters
+        self.graph = graph
         self.train_batch_seen: int = 0
 
     def train(self, inputs: Tensor, targets: Tensor, phase: str):
         if phase == 'train':
-            self.train_batch_seen += inputs.shape[0]
+            self.train_batch_seen += 1
         i_targets = targets if phase == 'train' else None
-        outputs = self.model(inputs, self.graph_filters, i_targets, self.train_batch_seen)
+        outputs = self.model(inputs, [self.graph], i_targets, self.train_batch_seen)
+        loss = self.loss(outputs, targets)
+        return outputs, loss
+
+
+class FCLSTMTrainer(Trainer):
+    def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
+        if phase == 'train':
+            outputs = self.model(inputs, targets)
+        else:
+            outputs = self.model(inputs)
         loss = self.loss(outputs, targets)
         return outputs, loss

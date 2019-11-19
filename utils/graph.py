@@ -4,6 +4,7 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 from scipy.sparse.linalg import eigsh
+from torch import sparse
 
 
 def normalized_laplacian(w: np.ndarray):
@@ -84,4 +85,4 @@ def convert_scipy_to_torch_sparse(w: sp.coo_matrix):
     shape = w.shape
     i = torch.LongTensor(np.vstack((w.row, w.col)).astype(int))
     v = torch.FloatTensor(w.data)
-    return torch.sparse.FloatTensor(i, v, torch.Size(shape))
+    return sparse.FloatTensor(i, v, torch.Size(shape))

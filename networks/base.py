@@ -1,14 +1,21 @@
+from typing import List
+
 import torch
 from torch import nn, Tensor, sparse
 from torch.nn import functional as F
 
 
-class DiffusionGraphConv(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, num_nodes: int, max_diffusion_step: int):
-        super(DiffusionGraphConv, self).__init__()
+class GraphConv(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, num_nodes: int, n_supports: int, max_step: int,
+                 bias_start: float = 0.):
+        super(GraphConv, self).__init__()
         self._num_nodes = num_nodes
-        self._max_diffusion_step = max_diffusion_step
-        self.linear = nn.Linear(input_dim * (max_diffusion_step + 1), output_dim)
+        self._max_diffusion_step = max_step
+        num_metrics = input_dim * (max_step * n_supports + 1)
+        self.weights = nn.Parameter(torch.empty(num_metrics, output_dim, dtype=torch.float32), requires_grad=True)
+        self.bias = nn.Parameter(torch.empty(output_dim, dtype=torch.float32), requires_grad=True)
+        nn.init.xavier_normal_(self.weights, gain=1.414)
+        nn.init.constant_(self.bias, bias_start)
 
     @staticmethod
     def _concat(x, x_):
@@ -17,7 +24,7 @@ class DiffusionGraphConv(nn.Module):
 
     def forward(self,
                 inputs: Tensor,
-                scaled_laplacian: Tensor):
+                supports: List[Tensor]):
         # Reshape input and state to (batch_size, num_nodes, input_dim)
         batch_size, num_nodes, input_dim = inputs.shape
 
@@ -29,24 +36,30 @@ class DiffusionGraphConv(nn.Module):
         if self._max_diffusion_step == 0:
             pass
         else:
-            x1 = sparse.mm(scaled_laplacian, x0)
-            x = self._concat(x, x1)
-            for k in range(2, self._max_diffusion_step + 1):
-                x2 = 2 * sparse.mm(scaled_laplacian, x1) - x0
-                x = self._concat(x, x2)
-                x1, x0 = x2, x1
+            for support in supports:
+                # x1 = sparse.mm(support, x0)
+                x1 = support.mm(x0)
+                x = self._concat(x, x1)
+                for k in range(2, self._max_diffusion_step + 1):
+                    # x2 = 2 * sparse.mm(support, x1) - x0
+                    x2 = 2 * support.mm(x1) - x0
+                    x = self._concat(x, x2)
+                    x1, x0 = x2, x1
 
         x = torch.reshape(x, shape=[-1, self._num_nodes, input_dim, batch_size])
         x = torch.transpose(x, dim0=0, dim1=3)  # (batch_size, num_nodes, input_dim, num_matrices)
-        x = torch.reshape(x, shape=[batch_size, self._num_nodes, input_dim * (self._max_diffusion_step + 1)])
+        x = torch.reshape(x, shape=[batch_size, self._num_nodes, -1])
 
-        return self.linear(x)
+        return x.matmul(self.weights) + self.bias
 
 
 class ChebNet(nn.Module):
-    def __init__(self, f_in: int, f_out: int, k_hop: int):
+    def __init__(self, f_in: int, f_out: int, k_hop: int, bias_start: float = 0.):
         super(ChebNet, self).__init__()
-        self.theta = nn.Linear(k_hop * f_in, f_out)
+        self.theta_w = nn.Parameter(torch.empty(k_hop * f_in, f_out, dtype=torch.float32), requires_grad=True)
+        self.theta_b = nn.Parameter(torch.empty(f_out, dtype=torch.float32), requires_grad=True)
+        nn.init.xavier_normal_(self.theta_w, gain=1.414)
+        nn.init.constant_(self.theta_b, bias_start)
 
     def forward(self, signals: Tensor, supports: Tensor) -> Tensor:
         """
@@ -58,7 +71,7 @@ class ChebNet(nn.Module):
         # shape => [B, N, K, F_in]
         tmp = supports.matmul(signals.unsqueeze(-3))
         # shape => [B, N, F_out]
-        return self.theta(tmp.reshape(tmp.shape[:-2] + (-1,)))
+        return tmp.reshape(tmp.shape[:-2] + (-1,)).matmul(self.theta_w) + self.theta_b
 
 
 class CausalConv1d(nn.Conv1d):

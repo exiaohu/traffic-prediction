@@ -1,4 +1,4 @@
-name: DCRNN-METR-LA
+name: FC-LSTM
 
 data:
   dataset: METR-LA
@@ -9,41 +9,37 @@ train:
   epochs: 50
 
 optimizer:
-  name: RMSprop
+  name: Adam
   Adam:
-    lr: 0.001
-    weight_decay: 0.0002
+    lr: 0.01
+    weight_decay: 0.001
   RMSprop:
-    lr: 0.001
+    lr: 0.01
     weight_decay: .001
 
 loss:
-  name: MaskedMAELoss
+  name: L1Loss
 
 model:
-  name: DCRNN
-  DCRNN:
+  name: FCLSTM
+  FCLSTM:
     n_hist: 12
     n_pred: 12
-    hidden_size: 64
-    num_nodes: 207
-    n_supports: 1
-    k_hop: 3
+    hidden_size: 256
     n_rnn_layers: 2
     input_dim: 2
     output_dim: 1
-    cl_decay_steps: 3000
 
 scheduler:
   name: ReduceLROnPlateau
   ReduceLROnPlateau:
     factor: 0.1
-    patience: 0
+    patience: 2
     threshold: 0.005
-    min_lr: 0.000001
+    min_lr: 0.00001
   StepLR:
     step_size: 10
     gamma: 0.1
   MultiStepLR:
-    milestones: [1, 5, 10, 15, 20]
+    milestones: [20, 30, 40, 50]
     gamma: 0.1
