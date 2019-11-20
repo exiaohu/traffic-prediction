@@ -6,7 +6,8 @@ data:
 
 train:
   device: 'cuda:0'
-  epochs: 50
+  epochs: 100
+  max_grad_norm: 5
 
 optimizer:
   name: Adam
@@ -35,8 +36,8 @@ scheduler:
   ReduceLROnPlateau:
     factor: 0.1
     patience: 2
-    threshold: 0.005
-    min_lr: 0.00001
+    threshold: 0.001
+    min_lr: 0.00000001
   StepLR:
     step_size: 10
     gamma: 0.1

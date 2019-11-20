@@ -33,9 +33,9 @@ class TrafficPredictionDataset(Dataset):
         return len(self.inputs)
 
     def __getitem__(self, idx: int):
-        x, y = self.inputs[idx], self.targets[idx]
+        x, y = self.inputs[idx], self.targets[idx][..., :1]
 
-        return torch.tensor(x).float(), torch.tensor(y[..., :1]).float()
+        return torch.tensor(x).float(), torch.tensor(y).float()
 
     @property
     def std(self):

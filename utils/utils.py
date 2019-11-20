@@ -52,7 +52,8 @@ def train_model(model: nn.Module,
                 folder: str,
                 trainer,
                 epochs: int,
-                device: str):
+                device: str,
+                max_grad_norm: float = None):
     datasets = get_datasets(dataset)
     dataloaders = get_dataloaders(datasets, batch_size)
     scaler = ZScoreScaler(datasets['train'].std[0], datasets['train'].mean[0])
@@ -97,6 +98,8 @@ def train_model(model: nn.Module,
                         if phase == 'train':
                             optimizer.zero_grad()
                             loss.backward()
+                            if max_grad_norm is not None:
+                                nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                             optimizer.step()
 
                     with torch.no_grad():
@@ -112,7 +115,7 @@ def train_model(model: nn.Module,
                     # torch.cuda.empty_cache()
 
                 # 性能
-                scores = evaluate(np.concatenate(running_targets), np.concatenate(predictions))
+                scores = evaluate(np.concatenate(predictions), np.concatenate(running_targets))
                 running_metrics[phase] = scores
 
                 if phase == 'validate' and scores['F1-SCORE'] > best_criterion:

@@ -7,6 +7,7 @@ data:
 train:
   device: 'cuda:0'
   epochs: 50
+  max_grad_norm: 5
 
 optimizer:
   name: RMSprop
