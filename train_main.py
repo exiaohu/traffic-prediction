@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 
@@ -9,7 +10,7 @@ from utils import train_model, get_optimizer, get_loss, get_scheduler
 
 
 def train(_config: dict):
-    print(_config)
+    print(json.dumps(config, indent=4))
     dataset = _config['data']['dataset']
     model_name = _config['model']['name']
     optimizer_name = _config['optimizer']['name']

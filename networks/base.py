@@ -6,16 +6,12 @@ from torch.nn import functional as F
 
 
 class GraphConv(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, num_nodes: int, n_supports: int, max_step: int,
-                 bias_start: float = 0.):
+    def __init__(self, input_dim: int, output_dim: int, num_nodes: int, n_supports: int, max_step: int):
         super(GraphConv, self).__init__()
         self._num_nodes = num_nodes
         self._max_diffusion_step = max_step
-        num_metrics = input_dim * (max_step * n_supports + 1)
-        self.weights = nn.Parameter(torch.empty(num_metrics, output_dim, dtype=torch.float32), requires_grad=True)
-        self.bias = nn.Parameter(torch.empty(output_dim, dtype=torch.float32), requires_grad=True)
-        nn.init.xavier_normal_(self.weights, gain=1.414)
-        nn.init.constant_(self.bias, bias_start)
+        num_metrics = max_step * n_supports + 1
+        self.out = nn.Linear(input_dim * num_metrics, output_dim)
 
     @staticmethod
     def _concat(x, x_):
@@ -25,12 +21,11 @@ class GraphConv(nn.Module):
     def forward(self,
                 inputs: Tensor,
                 supports: List[Tensor]):
-        # Reshape input and state to (batch_size, num_nodes, input_dim)
-        batch_size, num_nodes, input_dim = inputs.shape
+        b, n, input_dim = inputs.shape
 
         x = inputs
         x0 = torch.transpose(x, dim0=0, dim1=1)
-        x0 = torch.transpose(x0, dim0=1, dim1=2).reshape(num_nodes, -1)  # (num_nodes, input_dim, batch_size)
+        x0 = torch.transpose(x0, dim0=1, dim1=2).reshape(n, -1)  # (num_nodes, input_dim, batch_size)
         x = torch.unsqueeze(x0, dim=0)
 
         if self._max_diffusion_step == 0:
@@ -44,20 +39,17 @@ class GraphConv(nn.Module):
                     x = self._concat(x, x2)
                     x1, x0 = x2, x1
 
-        x = torch.reshape(x, shape=[-1, self._num_nodes, input_dim, batch_size])
+        x = torch.reshape(x, shape=[-1, self._num_nodes, input_dim, b])
         x = torch.transpose(x, dim0=0, dim1=3)  # (batch_size, num_nodes, input_dim, num_matrices)
-        x = torch.reshape(x, shape=[batch_size, self._num_nodes, -1])
+        x = torch.reshape(x, shape=[b, self._num_nodes, -1])
 
-        return x.matmul(self.weights) + self.bias
+        return self.out(x)
 
 
 class ChebNet(nn.Module):
-    def __init__(self, f_in: int, f_out: int, k_hop: int, bias_start: float = 0.):
+    def __init__(self, f_in: int, f_out: int, n_matrices: int):
         super(ChebNet, self).__init__()
-        self.theta_w = nn.Parameter(torch.empty(k_hop * f_in, f_out, dtype=torch.float32), requires_grad=True)
-        self.theta_b = nn.Parameter(torch.empty(f_out, dtype=torch.float32), requires_grad=True)
-        nn.init.xavier_normal_(self.theta_w, gain=1.414)
-        nn.init.constant_(self.theta_b, bias_start)
+        self.out = nn.Linear(n_matrices * f_in, f_out)
 
     def forward(self, signals: Tensor, supports: Tensor) -> Tensor:
         """
@@ -69,7 +61,7 @@ class ChebNet(nn.Module):
         # shape => [B, N, K, F_in]
         tmp = supports.matmul(signals.unsqueeze(-3))
         # shape => [B, N, F_out]
-        return tmp.reshape(tmp.shape[:-2] + (-1,)).matmul(self.theta_w) + self.theta_b
+        return self.out(tmp.reshape(tmp.shape[:-2] + (-1,)))
 
 
 class CausalConv1d(nn.Conv1d):

@@ -1,11 +1,12 @@
-from typing import Tuple
+from typing import Tuple, List
 
 from torch import Tensor, nn
 
 from networks.dcrnn import DCRNN
 from networks.fc_lstm import FCLSTM
 from networks.stgcn import STGCN
-from utils import get_graph, scaled_laplacian, convert_scipy_to_torch_sparse
+from utils import get_graph, convert_scipy_to_torch_sparse, random_walk_matrix, \
+    reverse_random_walk_matrix
 
 
 def create_model(name: str, dataset: str, loss, config: dict, device):
@@ -13,9 +14,10 @@ def create_model(name: str, dataset: str, loss, config: dict, device):
         return STGCN(**config)
     elif name == 'DCRNN':
         model = DCRNN(**config)
-        graph = scaled_laplacian(get_graph(dataset), lambda_max=None)
-        graph = convert_scipy_to_torch_sparse(graph).to(device)
-        return model, DCRNNTrainer(model, loss, graph)
+        graph = get_graph(dataset)
+        g1, g2 = random_walk_matrix(graph).T, reverse_random_walk_matrix(graph).T
+        g1, g2 = convert_scipy_to_torch_sparse(g1).to(device), convert_scipy_to_torch_sparse(g2).to(device)
+        return model, DCRNNTrainer(model, loss, [g1, g2])
     elif name == 'FCLSTM':
         model = FCLSTM(**config)
         return model, FCLSTMTrainer(model, loss)
@@ -33,16 +35,16 @@ class Trainer:
 
 
 class DCRNNTrainer(Trainer):
-    def __init__(self, model: DCRNN, loss, graph: Tensor):
+    def __init__(self, model: DCRNN, loss, graphs: List[Tensor]):
         super(DCRNNTrainer, self).__init__(model, loss)
-        self.graph = graph
+        self.graphs = graphs
         self.train_batch_seen: int = 0
 
     def train(self, inputs: Tensor, targets: Tensor, phase: str):
         if phase == 'train':
             self.train_batch_seen += 1
         i_targets = targets if phase == 'train' else None
-        outputs = self.model(inputs, [self.graph], i_targets, self.train_batch_seen)
+        outputs = self.model(inputs, self.graphs, i_targets, self.train_batch_seen)
         loss = self.loss(outputs, targets)
         return outputs, loss
 

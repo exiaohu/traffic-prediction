@@ -7,7 +7,7 @@ from scipy.sparse.linalg import eigsh
 from torch import sparse
 
 
-def normalized_laplacian(w: np.ndarray):
+def normalized_laplacian(w: np.ndarray) -> sp.coo_matrix:
     w = sp.coo_matrix(w)
     d = np.array(w.sum(1))
     d_inv_sqrt = np.power(d, -0.5).flatten()
@@ -16,7 +16,7 @@ def normalized_laplacian(w: np.ndarray):
     return sp.eye(w.shape[0]) - w.dot(d_mat_inv_sqrt).T.dot(d_mat_inv_sqrt).tocoo()
 
 
-def random_walk_matrix(w):
+def random_walk_matrix(w) -> sp.coo_matrix:
     w = sp.coo_matrix(w)
     d = np.array(w.sum(1))
     d_inv = np.power(d, -1).flatten()
@@ -25,17 +25,22 @@ def random_walk_matrix(w):
     return d_mat_inv.dot(w).tocoo()
 
 
-def scaled_laplacian(w: np.ndarray, lambda_max: Union[float, None] = 2., undirected: bool = True):
+def reverse_random_walk_matrix(w) -> sp.coo_matrix:
+    return random_walk_matrix(w.T)
+
+
+def scaled_laplacian(w: np.ndarray, lambda_max: Union[float, None] = 2., undirected: bool = True) -> sp.coo_matrix:
     if undirected:
-        w = np.maximum(w, w.T)
-    l = normalized_laplacian(w)
+        w = np.maximum.reduce([w, w.T])
+    lp = normalized_laplacian(w)
     if lambda_max is None:
-        lambda_max, _ = eigsh(l, 1, which='LM')
+        lambda_max, _ = eigsh(lp, 1, which='LM')
         lambda_max = lambda_max[0]
-    m, _ = l.shape
-    i = sp.identity(m, format='coo', dtype=l.dtype)
-    l = (2 / lambda_max * l) - i
-    return l.tocoo()
+    lp = sp.csr_matrix(lp)
+    m, _ = lp.shape
+    i = sp.identity(m, format='csr', dtype=lp.dtype)
+    lp = (2 / lambda_max * lp) - i
+    return lp.astype(np.float32).tocoo()
 
 
 def cheb_poly_approx(lp, k_hop, n):
@@ -83,6 +88,6 @@ def convert_scipy_to_torch_sparse(w: sp.coo_matrix):
     :return:
     """
     shape = w.shape
-    i = torch.LongTensor(np.vstack((w.row, w.col)).astype(int))
-    v = torch.FloatTensor(w.data)
+    i = torch.tensor(np.vstack((w.row, w.col)).astype(int)).long()
+    v = torch.tensor(w.data).float()
     return sparse.FloatTensor(i, v, torch.Size(shape))

@@ -1,12 +1,12 @@
-name: DCRNN-METR-LA
+name: DCRNN
 
 data:
   dataset: METR-LA
   batch-size: 64
 
 train:
-  device: 'cuda:0'
-  epochs: 50
+  device: 'cuda:1'
+  epochs: 100
   max_grad_norm: 5
 
 optimizer:
@@ -16,10 +16,10 @@ optimizer:
     weight_decay: 0.0002
   RMSprop:
     lr: 0.001
-    weight_decay: .001
+    weight_decay: 0
 
 loss:
-  name: MaskedMAELoss
+  name: L1Loss
 
 model:
   name: DCRNN
@@ -28,9 +28,9 @@ model:
     n_pred: 12
     hidden_size: 64
     num_nodes: 207
-    n_supports: 1
-    k_hop: 3
-    n_rnn_layers: 2
+    n_supports: 2
+    k_hop: 2
+    n_rnn_layers: 3
     input_dim: 2
     output_dim: 1
     cl_decay_steps: 3000
@@ -40,8 +40,8 @@ scheduler:
   ReduceLROnPlateau:
     factor: 0.1
     patience: 0
-    threshold: 0.005
-    min_lr: 0.000001
+    threshold: 0.001
+    min_lr: 0.00000001
   StepLR:
     step_size: 10
     gamma: 0.1
