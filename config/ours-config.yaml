@@ -1,0 +1,46 @@
+name: Ours
+
+data:
+  dataset: METR-LA
+  batch-size: 64
+
+train:
+  device: 'cuda:1'
+  epochs: 50
+
+optimizer:
+  name: Adam
+  Adam:
+    lr: 0.1
+    weight_decay: 0.002
+  RMSprop:
+    lr: 0.01
+    weight_decay: 0.001
+
+loss:
+  name: MaskedMAELoss
+
+model:
+  name: Ours
+  Ours:
+    num_node: 207
+    n_in: 2
+    n_hidden: 16
+    n_out: 1
+    node_dim: 8
+    edge_dim: 16
+    n_pred: 12
+
+scheduler:
+  name: ReduceLROnPlateau
+  ReduceLROnPlateau:
+    factor: 0.2
+    patience: 0
+    threshold: 0.001
+    min_lr: 0.0000001
+  StepLR:
+    step_size: 10
+    gamma: 0.1
+  MultiStepLR:
+    milestones: [20, 30, 40, 50]
+    gamma: 0.1

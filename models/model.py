@@ -1,9 +1,12 @@
+import math
 from typing import Tuple, List
 
 from torch import Tensor, nn
 
 from networks.dcrnn import DCRNN
+from networks.dcrnn_model import DCRNNModel
 from networks.fc_lstm import FCLSTM
+from networks.ours import Ours
 from networks.stgcn import STGCN
 from utils import get_graph, convert_scipy_to_torch_sparse, random_walk_matrix, \
     reverse_random_walk_matrix
@@ -21,6 +24,14 @@ def create_model(name: str, dataset: str, loss, config: dict, device):
     elif name == 'FCLSTM':
         model = FCLSTM(**config)
         return model, FCLSTMTrainer(model, loss)
+    elif name == 'Ours':
+        model = Ours(**config)
+        return model, OursTrainer(model, loss)
+    elif name == 'DCRNNMODEL':
+        cl_decay_steps = config.pop('cl_decay_steps')
+        graph = get_graph(dataset)
+        model = DCRNNModel(graph, **config)
+        return model, DCRNNMODELTrainer(model, loss, cl_decay_steps)
     else:
         raise ValueError(f'{name} is not implemented.')
 
@@ -57,3 +68,35 @@ class FCLSTMTrainer(Trainer):
             outputs = self.model(inputs)
         loss = self.loss(outputs, targets)
         return outputs, loss
+
+
+class OursTrainer(Trainer):
+    def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
+        if phase == 'train':
+            outputs, supports = self.model(inputs, targets)
+        else:
+            outputs, supports = self.model(inputs)
+        loss = self.loss(outputs, targets)  # - 100 * distributions.Categorical(probs=supports).entropy().mean()
+        return outputs, loss
+
+
+class DCRNNMODELTrainer(Trainer):
+    def __init__(self, model: DCRNNModel, loss, cl_decay_steps: int):
+        super(DCRNNMODELTrainer, self).__init__(model, loss)
+        self.cl_decay_steps = cl_decay_steps
+        self.global_step: int = 0
+
+    def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
+        if phase == 'train':
+            self.global_step += 1
+            outputs = self.model(inputs, targets, self._compute_sampling_threshold)
+            outputs = outputs.reshape(12, -1, 207, 1).transpose(0, 1)
+        else:
+            outputs = self.model(inputs, targets, 0)
+            outputs = outputs.reshape(12, -1, 207, 1).transpose(0, 1)
+        loss = self.loss(outputs.cpu(), targets.cpu())
+        return outputs, loss
+
+    @property
+    def _compute_sampling_threshold(self):
+        return self.cl_decay_steps / (self.cl_decay_steps + math.exp(self.global_step / self.cl_decay_steps))

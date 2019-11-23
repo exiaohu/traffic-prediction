@@ -2,6 +2,7 @@ import copy
 import os
 import pickle
 import time
+from typing import Union, List
 
 import numpy as np
 import torch
@@ -52,7 +53,7 @@ def train_model(model: nn.Module,
                 folder: str,
                 trainer,
                 epochs: int,
-                device: str,
+                device: Union[str, List[int]],
                 max_grad_norm: float = None):
     datasets = get_datasets(dataset)
     dataloaders = get_dataloaders(datasets, batch_size)
@@ -64,9 +65,13 @@ def train_model(model: nn.Module,
 
     since = time.perf_counter()
 
-    model = model.to(device)
+    if isinstance(device, str):
+        model = model.to(device)
+    elif isinstance(device, list):
+        model = nn.DataParallel(model, device)
+        device = f'cuda:{device[0]}'
 
-    save_dict, best_criterion = {'model_state_dict': copy.deepcopy(model.state_dict()), 'epoch': 0}, 0
+    save_dict, best_criterion = dict(), float('inf')
 
     print(model)
     print(f'Trainable parameters: {get_number_of_parameters(model)}.')
@@ -116,13 +121,16 @@ def train_model(model: nn.Module,
 
                 # 性能
                 scores = evaluate(np.concatenate(predictions), np.concatenate(running_targets))
+                now_criterion = scores.pop('criterion')
+                
                 running_metrics[phase] = scores
 
-                if phase == 'validate' and scores['F1-SCORE'] > best_criterion:
-                    best_criterion = scores['F1-SCORE'],
+                if phase == 'val' and now_criterion < best_criterion:
+                    best_criterion = now_criterion,
                     save_dict.update(model_state_dict=copy.deepcopy(model.state_dict()),
                                      epoch=epoch,
                                      optimizer_state_dict=copy.deepcopy(optimizer.state_dict()))
+                    print(f'Better model at epoch {epoch} recorded.')
 
             scheduler.step(running_loss['train'])
 
@@ -139,7 +147,9 @@ def train_model(model: nn.Module,
 
         model.load_state_dict(save_dict['model_state_dict'])
 
-        save_model(os.path.join(folder, 'best_model.pkl'), **save_dict)
+        save_path = os.path.join(folder, 'best_model.pkl')
+        save_model(save_path, **save_dict)
+        print(f'model of epoch {save_dict["epoch"]} successfully saved at `{save_path}`')
 
     return model
 

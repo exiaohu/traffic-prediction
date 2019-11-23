@@ -55,7 +55,7 @@ class ChebNet(nn.Module):
         """
         implement of ChebNet
         :param signals: input signals, Tensor, [*, N, F_in]
-        :param supports: pre-calculated Chebychev polynomial filters, Tensor, [N, K_hop, N]
+        :param supports: pre-calculated Chebychev polynomial filters, Tensor, [N, n_matrices, N]
         :return: Tensor, [B, N, F_out]
         """
         # shape => [B, N, K, F_in]
