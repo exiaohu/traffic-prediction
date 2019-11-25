@@ -140,7 +140,7 @@ def train_model(model: nn.Module,
 
                 if phase == 'val':
                     if running_loss['val'] < best_val_loss:
-                        best_val_loss = running_loss['val'],
+                        best_val_loss = running_loss['val']
                         save_dict.update(model_state_dict=copy.deepcopy(model.state_dict()),
                                          epoch=epoch,
                                          best_val_loss=best_val_loss,
