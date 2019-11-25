@@ -29,12 +29,12 @@ model:
     n_pred: 12
     hidden_size: 64
     num_nodes: 207
-    n_supports: 2
+    n_supports: 1
     k_hop: 2
     n_rnn_layers: 2
     input_dim: 2
     output_dim: 1
-    cl_decay_steps: 2000
+    cl_decay_steps: 1000
 
 scheduler:
   name: ReduceLROnPlateau

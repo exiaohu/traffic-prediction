@@ -32,7 +32,6 @@ def evaluate(predictions: np.ndarray, targets: np.ndarray):
     scores['MAE']['60min'] = mae_np(y_pred, y_true)
     scores['RMSE']['60min'] = rmse_np(y_pred, y_true)
 
-    scores['criterion'] = sum([scores[metric]['60min'] for metric in ['masked MAE', 'masked RMSE', 'masked MAPE']])
     return scores
 
 

@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import pickle
 import time
@@ -52,13 +53,27 @@ def train_model(model: nn.Module,
                 scheduler,
                 folder: str,
                 trainer,
-                begin_epoch,
                 epochs: int,
                 device: Union[str, List[int]],
                 max_grad_norm: float = None):
     datasets = get_datasets(dataset)
     dataloaders = get_dataloaders(datasets, batch_size)
     scaler = ZScoreScaler(datasets['train'].std[0], datasets['train'].mean[0])
+
+    save_path = os.path.join(folder, 'best_model.pkl')
+
+    if os.path.exists(save_path):
+        save_dict = torch.load(save_path)
+
+        model.load_state_dict(save_dict['model_state_dict'])
+        optimizer.load_state_dict(save_dict['optimizer_state_dict'])
+        best_val_loss = save_dict['best_val_loss']
+
+        begin_epoch = save_dict['epoch'] + 1
+    else:
+        save_dict = dict()
+        best_val_loss = float('inf')
+        begin_epoch = 0
 
     phases = ['train', 'val', 'test']
 
@@ -71,8 +86,6 @@ def train_model(model: nn.Module,
     elif isinstance(device, list):
         model = nn.DataParallel(model, device)
         device = f'cuda:{device[0]}'
-
-    save_dict, best_criterion = dict(), float('inf')
 
     print(model)
     print(f'Trainable parameters: {get_number_of_parameters(model)}.')
@@ -122,15 +135,15 @@ def train_model(model: nn.Module,
 
                 # 性能
                 scores = evaluate(np.concatenate(predictions), np.concatenate(running_targets))
-                now_criterion = scores.pop('criterion')
 
                 running_metrics[phase] = scores
 
                 if phase == 'val':
-                    if now_criterion < best_criterion:
-                        best_criterion = now_criterion,
+                    if running_loss['val'] < best_val_loss:
+                        best_val_loss = running_loss['val'],
                         save_dict.update(model_state_dict=copy.deepcopy(model.state_dict()),
                                          epoch=epoch,
+                                         best_val_loss=best_val_loss,
                                          optimizer_state_dict=copy.deepcopy(optimizer.state_dict()))
                         print(f'Better model at epoch {epoch} recorded.')
                     elif epoch - save_dict['epoch'] > 10:
@@ -145,17 +158,56 @@ def train_model(model: nn.Module,
             writer.add_scalars('Loss', {
                 f'{phase} loss': running_loss[phase] / len(dataloaders[phase].dataset) for phase in phases},
                                global_step=epoch)
-    finally:
+    except ValueError:
         time_elapsed = time.perf_counter() - since
         print(f"cost {time_elapsed} seconds")
 
         model.load_state_dict(save_dict['model_state_dict'])
 
-        save_path = os.path.join(folder, 'best_model.pkl')
         save_model(save_path, **save_dict)
         print(f'model of epoch {save_dict["epoch"]} successfully saved at `{save_path}`')
 
     return model
+
+
+def test_model(model: nn.Module,
+               dataset: str,
+               batch_size: int,
+               trainer,
+               folder: str,
+               device: Union[str, List[int]]):
+    datasets = get_datasets(dataset)
+    dataloaders = get_dataloaders(datasets, batch_size)
+    scaler = ZScoreScaler(datasets['train'].std[0], datasets['train'].mean[0])
+
+    if isinstance(device, str):
+        model = model.to(device)
+    elif isinstance(device, list):
+        model = nn.DataParallel(model, device)
+        device = f'cuda:{device[0]}'
+
+    model.eval()
+
+    steps, predictions, running_targets = 0, list(), list()
+    for step, (inputs, targets) in tqdm(enumerate(dataloaders['test']), 'Test model'):
+        running_targets.append(targets.numpy())
+
+        inputs[..., 0] = scaler.transform(inputs[..., 0])
+        inputs = inputs.to(device)
+        targets = scaler.transform(targets)
+        targets = targets.to(device)
+
+        with torch.no_grad():
+            outputs, loss = trainer.train(inputs, targets, 'test')
+            predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
+
+        steps += len(targets)
+
+    # 性能
+    scores = evaluate(np.concatenate(predictions), np.concatenate(running_targets))
+    print(scores)
+    with open(os.path.join(folder, 'test-scores.json'), 'w+') as f:
+        json.dump(scores, f)
 
 
 def save_model(path: str, **save_dict):

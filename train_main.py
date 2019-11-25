@@ -3,11 +3,10 @@ import json
 import os
 import shutil
 
-import torch
 import yaml
 
 from models import create_model
-from utils import train_model, get_optimizer, get_loss, get_scheduler
+from utils import train_model, get_optimizer, get_loss, get_scheduler, test_model
 
 
 def resume(_config: dict):
@@ -33,12 +32,6 @@ def resume(_config: dict):
 
     save_folder = os.path.join('saves', dataset, _config['name'])
 
-    saved = torch.load(os.path.join(save_folder, 'best_model.pkl'))
-
-    model.load_state_dict(saved['model_state_dict'])
-    begin_epoch = saved['epoch'] + 1
-    optimizer.load_state_dict(saved['optimizer_state_dict'])
-
     with open(os.path.join(save_folder, 'config.yaml'), 'w+') as _f:
         yaml.safe_dump(_config, _f)
 
@@ -49,8 +42,14 @@ def resume(_config: dict):
                 scheduler=scheduler,
                 folder=save_folder,
                 trainer=trainer,
-                begin_epoch=begin_epoch,
                 **_config['train'])
+
+    test_model(model=model,
+               dataset=dataset,
+               batch_size=_config['data']['batch-size'],
+               trainer=trainer,
+               folder=save_folder,
+               device=_config['train']['device'])
 
 
 def train(_config):
@@ -89,8 +88,14 @@ def train(_config):
                 scheduler=scheduler,
                 folder=save_folder,
                 trainer=trainer,
-                begin_epoch=0,
                 **_config['train'])
+
+    test_model(model=model,
+               dataset=dataset,
+               batch_size=_config['data']['batch-size'],
+               trainer=trainer,
+               folder=save_folder,
+               device=_config['train']['device'])
 
 
 if __name__ == '__main__':

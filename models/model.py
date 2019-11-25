@@ -8,8 +8,7 @@ from networks.dcrnn_model import DCRNNModel
 from networks.fc_lstm import FCLSTM
 from networks.ours import Ours
 from networks.stgcn import STGCN
-from utils import get_graph, convert_scipy_to_torch_sparse, random_walk_matrix, \
-    reverse_random_walk_matrix
+from utils import get_graph, scaled_laplacian, convert_scipy_to_torch_sparse
 
 
 class Trainer:
@@ -28,9 +27,11 @@ def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[n
     elif name == 'DCRNN':
         model = DCRNN(**config)
         graph = get_graph(dataset)
-        g1, g2 = random_walk_matrix(graph), reverse_random_walk_matrix(graph)
-        g1, g2 = convert_scipy_to_torch_sparse(g1).to(device), convert_scipy_to_torch_sparse(g2).to(device)
-        return model, DCRNNTrainer(model, loss, [g1, g2])
+        graph = scaled_laplacian(graph)
+        graph = convert_scipy_to_torch_sparse(graph).to(device)
+        # g1, g2 = random_walk_matrix(graph), reverse_random_walk_matrix(graph)
+        # g1, g2 = convert_scipy_to_torch_sparse(g1).to(device), convert_scipy_to_torch_sparse(g2).to(device)
+        return model, DCRNNTrainer(model, loss, [graph])
     elif name == 'FCLSTM':
         model = FCLSTM(**config)
         return model, FCLSTMTrainer(model, loss)

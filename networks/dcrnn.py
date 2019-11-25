@@ -66,7 +66,7 @@ class DCRNNDecoder(nn.ModuleList):
         self.out = nn.Linear(hidden_size, output_size)
 
     def forward(self, supports: List[Tensor], states: Tensor,
-                targets: Tensor = None, teacher_force: float = 0.5) -> Tensor:
+                targets: Tensor = None, teacher_force: bool = 0.5) -> Tensor:
         """
         :param supports: list of sparse tensors, each of shape [N, N]
         :param states: tensor, [n_layers, B, N, hidden_size]
