@@ -21,12 +21,16 @@ class GraphConv(nn.Module):
     def forward(self,
                 inputs: Tensor,
                 supports: List[Tensor]):
+        """
+        :param inputs: tensor, [B, N, input_dim]
+        :param supports: list of sparse tensors, each of shape [N, N]
+        :return: tensor, [B, N, output_dim]
+        """
         b, n, input_dim = inputs.shape
 
         x = inputs
-        x0 = torch.transpose(x, dim0=0, dim1=1)
-        x0 = torch.transpose(x0, dim0=1, dim1=2).reshape(n, -1)  # (num_nodes, input_dim, batch_size)
-        x = torch.unsqueeze(x0, dim=0)
+        x0 = x.permute([1, 2, 0]).reshape(n, -1)  # (num_nodes, input_dim * batch_size)
+        x = x0.unsqueeze(dim=0)  # (1, num_nodes, input_dim * batch_size)
 
         if self._max_diffusion_step == 0:
             pass
@@ -39,11 +43,10 @@ class GraphConv(nn.Module):
                     x = self._concat(x, x2)
                     x1, x0 = x2, x1
 
-        x = torch.reshape(x, shape=[-1, self._num_nodes, input_dim, b])
-        x = torch.transpose(x, dim0=0, dim1=3)  # (batch_size, num_nodes, input_dim, num_matrices)
-        x = torch.reshape(x, shape=[b, self._num_nodes, -1])
+        x = x.reshape(-1, n, input_dim, b).transpose(0, 3)  # (batch_size, num_nodes, input_dim, num_matrices)
+        x = x.reshape(b, n, -1)  # (batch_size, num_nodes, input_dim * num_matrices)
 
-        return self.out(x)
+        return self.out(x)  # (batch_size, num_nodes, output_dim)
 
 
 class ChebNet(nn.Module):

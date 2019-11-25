@@ -28,7 +28,7 @@ def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[n
     elif name == 'DCRNN':
         model = DCRNN(**config)
         graph = get_graph(dataset)
-        g1, g2 = random_walk_matrix(graph).T, reverse_random_walk_matrix(graph).T
+        g1, g2 = random_walk_matrix(graph), reverse_random_walk_matrix(graph)
         g1, g2 = convert_scipy_to_torch_sparse(g1).to(device), convert_scipy_to_torch_sparse(g2).to(device)
         return model, DCRNNTrainer(model, loss, [g1, g2])
     elif name == 'FCLSTM':

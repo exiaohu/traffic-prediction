@@ -46,7 +46,6 @@ class MaskedMAELoss(nn.Module):
             mask = torch.ne(labels, self.null_val)
         mask = mask.to(torch.float32)
         mask /= torch.mean(mask)
-        print(mask.device, preds.device, labels.device)
         mask = torch.where(torch.isnan(mask), torch.zeros_like(mask, device=preds.device), mask)
         loss = torch.abs(preds - labels)
         loss = loss * mask

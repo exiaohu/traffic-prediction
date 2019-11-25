@@ -19,11 +19,18 @@ class MetaLinear(nn.Module):
         super(MetaLinear, self).__init__()
         self.f_in = f_in
         self.f_out = f_out
-        self.weights_mlp = MLP(meta_hiddens + (f_in * f_out,), nn.Sigmoid, False)
-        self.bias_mlp = MLP(meta_hiddens + (f_out,), nn.Sigmoid, False)
+        self.weights_mlp = MLP(meta_hiddens + [f_in * f_out], nn.Sigmoid, False)
+        self.bias_mlp = MLP(meta_hiddens + [f_out], nn.Sigmoid, False)
 
-    def forward(self, meta_knowledge: Tensor, inputs: Tensor) -> Tensor:
-        weights = self.weights_mlp(meta_knowledge).reshape(-1, self.f_in, self.f_out)
-        bias = self.bias_mlp(meta_knowledge)
+    def forward(self, feature: Tensor, data: Tensor) -> Tensor:
+        """
+        :param feature: tensor, [N, F]
+        :param data: tensor, [B, N, F_in]
+        :return:
+        """
+        b, n, _ = data.shape
+        data = data.reshape(b, n, 1, self.f_in)
+        weights = self.weights_mlp(feature).reshape(1, n, self.f_in, self.f_out)  # [F_in, F_out]
+        bias = self.bias_mlp(feature)  # [n, F_out]
 
-        return inputs.bmm(weights) + bias
+        return data.matmul(weights).squeeze(2) + bias
