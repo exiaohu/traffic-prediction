@@ -43,7 +43,7 @@ scheduler:
     factor: 0.1
     patience: 0
     threshold: 0.001
-    min_lr: 0.00000001
+    min_lr: 0.000001
   StepLR:
     step_size: 10
     gamma: 0.1

@@ -92,8 +92,8 @@ class DCGRUCell(nn.Module):
         self._num_proj = num_proj
         self._use_gc_for_ru = use_gc_for_ru
         supports = scaled_laplacian(adj_mat, lambda_max=None)  # scipy coo matrix
-        # self._supports = self._build_sparse_matrix(supports).cuda(1)  # to pytorch sparse tensor
-        self._supports = torch.tensor(supports.todense()).cuda(1)
+        # self._supports = self._build_sparse_matrix(supports).cuda()  # to pytorch sparse tensor
+        self._supports = torch.tensor(supports.todense()).cuda()
         # self.register_parameter('weight', None)
         # self.register_parameter('biases', None)
         # temp_inputs = torch.FloatTensor(torch.rand((batch_size, num_nodes * input_dim)))
@@ -208,7 +208,7 @@ class DCRNNEncoder(nn.Module):
                 _, hidden_state = self.encoding_cells[i_layer](current_inputs[t, ...], hidden_state)  # (50, 207*64)
                 output_inner.append(hidden_state)
             output_hidden.append(hidden_state)
-            current_inputs = torch.stack(output_inner, dim=0).cuda(1)  # seq_len, B, ...
+            current_inputs = torch.stack(output_inner, dim=0).cuda()  # seq_len, B, ...
         # output_hidden: the hidden state of each layer at last time step, shape (num_layers, batch, outdim)
         # current_inputs: the hidden state of the top layer (seq_len, B, outdim)
         return output_hidden, current_inputs
@@ -309,7 +309,7 @@ class DCRNNModel(nn.Module):
         self._output_dim = output_dim  # should be 1
 
         # specify a GO symbol as the start of the decoder
-        self.GO_Symbol = torch.zeros(1, batch_size, num_nodes * self._output_dim, 1).cuda(1)
+        self.GO_Symbol = torch.zeros(1, batch_size, num_nodes * self._output_dim, 1).cuda()
 
         self.encoder = DCRNNEncoder(input_dim=enc_input_dim, adj_mat=adj_mat,
                                     max_diffusion_step=max_diffusion_step,
@@ -330,7 +330,7 @@ class DCRNNModel(nn.Module):
         target = torch.cat([self.GO_Symbol, target], dim=0)
 
         # initialize the hidden state of the encoder
-        init_hidden_state = self.encoder.init_hidden(self._batch_size).cuda(1)
+        init_hidden_state = self.encoder.init_hidden(self._batch_size).cuda()
 
         # last hidden state of the encoder is the context
         context, _ = self.encoder(source, init_hidden_state)  # (num_layers, batch, outdim)

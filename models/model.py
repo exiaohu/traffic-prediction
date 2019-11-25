@@ -12,9 +12,19 @@ from utils import get_graph, convert_scipy_to_torch_sparse, random_walk_matrix, 
     reverse_random_walk_matrix
 
 
-def create_model(name: str, dataset: str, loss, config: dict, device):
+class Trainer:
+    def __init__(self, model: nn.Module, loss):
+        self.model = model
+        self.loss = loss
+
+    def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
+        raise ValueError('Not implemented.')
+
+
+def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[nn.Module, Trainer]:
     if name == 'STGCN':
-        return STGCN(**config)
+        model = STGCN(**config)
+        return model, STGCNTrainer(model, loss)
     elif name == 'DCRNN':
         model = DCRNN(**config)
         graph = get_graph(dataset)
@@ -36,18 +46,15 @@ def create_model(name: str, dataset: str, loss, config: dict, device):
         raise ValueError(f'{name} is not implemented.')
 
 
-class Trainer:
-    def __init__(self, model: nn.Module, loss):
-        self.model = model
-        self.loss = loss
-
-    def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
-        raise ValueError('Not implemented.')
+class STGCNTrainer(Trainer):
+    pass
 
 
 class DCRNNTrainer(Trainer):
     def __init__(self, model: DCRNN, loss, graphs: List[Tensor]):
         super(DCRNNTrainer, self).__init__(model, loss)
+        for graph in graphs:
+            graph.requires_grad_(False)
         self.graphs = graphs
         self.train_batch_seen: int = 0
 
@@ -94,7 +101,7 @@ class DCRNNMODELTrainer(Trainer):
         else:
             outputs = self.model(inputs, targets, 0)
             outputs = outputs.reshape(12, -1, 207, 1).transpose(0, 1)
-        loss = self.loss(outputs.cpu(), targets.cpu())
+        loss = self.loss(outputs, targets)
         return outputs, loss
 
     @property

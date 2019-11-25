@@ -57,5 +57,4 @@ def get_dataloaders(datasets: Dict[str, TrafficPredictionDataset],
     return {key: DataLoader(dataset=ds,
                             batch_size=batch_size,
                             shuffle=(key == 'train'),
-                            num_workers=num_workers,
-                            drop_last=True) for key, ds in datasets.items()}
+                            num_workers=num_workers) for key, ds in datasets.items()}

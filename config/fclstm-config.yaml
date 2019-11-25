@@ -5,7 +5,7 @@ data:
   batch-size: 64
 
 train:
-  device: 'cuda:0'
+  device: 'cuda:2'
   epochs: 100
   max_grad_norm: 5
 
@@ -19,7 +19,7 @@ optimizer:
     weight_decay: .001
 
 loss:
-  name: L1Loss
+  name: MaskedMSELoss
 
 model:
   name: FCLSTM
@@ -37,7 +37,7 @@ scheduler:
     factor: 0.1
     patience: 2
     threshold: 0.001
-    min_lr: 0.00000001
+    min_lr: 0.000001
   StepLR:
     step_size: 10
     gamma: 0.1

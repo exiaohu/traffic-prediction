@@ -27,10 +27,10 @@ class MaskedMSELoss(nn.Module):
             mask = torch.ne(labels, self.null_val)
         mask = mask.to(torch.float32)
         mask /= torch.mean(mask)
-        mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
+        mask = torch.where(torch.isnan(mask), torch.zeros_like(mask, device=preds.device), mask)
         loss = torch.pow(preds - labels, 2)
         loss = loss * mask
-        loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
+        loss = torch.where(torch.isnan(loss), torch.zeros_like(loss, device=preds.device), loss)
         return torch.mean(loss)
 
 
@@ -46,8 +46,9 @@ class MaskedMAELoss(nn.Module):
             mask = torch.ne(labels, self.null_val)
         mask = mask.to(torch.float32)
         mask /= torch.mean(mask)
-        mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
+        print(mask.device, preds.device, labels.device)
+        mask = torch.where(torch.isnan(mask), torch.zeros_like(mask, device=preds.device), mask)
         loss = torch.abs(preds - labels)
         loss = loss * mask
-        loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
+        loss = torch.where(torch.isnan(loss), torch.zeros_like(loss, device=preds.device), loss)
         return torch.mean(loss)

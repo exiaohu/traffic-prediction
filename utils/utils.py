@@ -52,6 +52,7 @@ def train_model(model: nn.Module,
                 scheduler,
                 folder: str,
                 trainer,
+                begin_epoch,
                 epochs: int,
                 device: Union[str, List[int]],
                 max_grad_norm: float = None):
@@ -77,7 +78,7 @@ def train_model(model: nn.Module,
     print(f'Trainable parameters: {get_number_of_parameters(model)}.')
 
     try:
-        for epoch in range(epochs):
+        for epoch in range(begin_epoch, begin_epoch + epochs):
 
             running_loss, running_metrics = {phase: 0.0 for phase in phases}, {phase: dict() for phase in phases}
             for phase in phases:
@@ -122,15 +123,18 @@ def train_model(model: nn.Module,
                 # 性能
                 scores = evaluate(np.concatenate(predictions), np.concatenate(running_targets))
                 now_criterion = scores.pop('criterion')
-                
+
                 running_metrics[phase] = scores
 
-                if phase == 'val' and now_criterion < best_criterion:
-                    best_criterion = now_criterion,
-                    save_dict.update(model_state_dict=copy.deepcopy(model.state_dict()),
-                                     epoch=epoch,
-                                     optimizer_state_dict=copy.deepcopy(optimizer.state_dict()))
-                    print(f'Better model at epoch {epoch} recorded.')
+                if phase == 'val':
+                    if now_criterion < best_criterion:
+                        best_criterion = now_criterion,
+                        save_dict.update(model_state_dict=copy.deepcopy(model.state_dict()),
+                                         epoch=epoch,
+                                         optimizer_state_dict=copy.deepcopy(optimizer.state_dict()))
+                        print(f'Better model at epoch {epoch} recorded.')
+                    elif epoch - save_dict['epoch'] > 10:
+                        raise ValueError('Early stopped.')
 
             scheduler.step(running_loss['train'])
 
