@@ -6,13 +6,13 @@ data:
 
 train:
   device: 'cuda:2'
-  epochs: 200
+  epochs: 100
   max_grad_norm: 5
 
 optimizer:
   name: Adam
   Adam:
-    lr: 0.01
+    lr: 0.0001
     weight_decay: 0.001
     eps: 0.001
     amsgrad: true
@@ -21,7 +21,7 @@ optimizer:
     weight_decay: 0.001
 
 loss:
-  name: MaskedMAELoss
+  name: MaskedMSELoss
 
 model:
   name: DCRNN
@@ -34,13 +34,13 @@ model:
     n_rnn_layers: 2
     input_dim: 2
     output_dim: 1
-    cl_decay_steps: 1000
+    cl_decay_steps: 2300
 
 scheduler:
   name: ReduceLROnPlateau
   ReduceLROnPlateau:
-    factor: 0.1
-    patience: 0
+    factor: 0.2
+    patience: 5
     threshold: 0.001
     min_lr: 0.000001
   StepLR:

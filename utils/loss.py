@@ -2,7 +2,8 @@ import sys
 
 import numpy as np
 import torch
-from torch import nn
+from torch import nn, Tensor
+from torch.nn import functional as F
 
 
 def get_loss(name, **kwargs):
@@ -15,39 +16,36 @@ def get_loss(name, **kwargs):
             raise ValueError(f'{name} is not defined.')
 
 
-class MaskedMSELoss(nn.Module):
-    def __init__(self, null_val=0):
-        super(MaskedMSELoss, self).__init__()
+class MaskedLoss(nn.Module):
+    def __init__(self, null_val=0.0):
+        super(MaskedLoss, self).__init__()
         self.null_val = null_val
 
-    def forward(self, preds, labels):
+    def forward(self, outputs: Tensor, targets: Tensor) -> Tensor:
+        raise NotImplementedError()
+
+    def compute_mask(self, targets: Tensor):
         if np.isnan(self.null_val):
-            mask = ~torch.isnan(labels)
+            mask = ~torch.isnan(targets)
         else:
-            mask = torch.ne(labels, self.null_val)
+            mask = torch.ne(targets, self.null_val)
         mask = mask.to(torch.float32)
         mask /= torch.mean(mask)
-        mask = torch.where(torch.isnan(mask), torch.zeros_like(mask, device=preds.device), mask)
-        loss = torch.pow(preds - labels, 2)
-        loss = loss * mask
-        loss = torch.where(torch.isnan(loss), torch.zeros_like(loss, device=preds.device), loss)
-        return torch.mean(loss)
+        mask = torch.where(torch.isnan(mask), torch.tensor(0., device=mask.device), mask)
+        return mask
 
 
-class MaskedMAELoss(nn.Module):
-    def __init__(self, null_val=0):
-        super(MaskedMAELoss, self).__init__()
-        self.null_val = null_val
+class MaskedMSELoss(MaskedLoss):
+    def forward(self, outputs: Tensor, targets: Tensor) -> Tensor:
+        mask = self.compute_mask(targets)
+        loss = F.mse_loss(outputs, targets, reduction='none') * mask
+        loss = torch.where(torch.isnan(loss), torch.tensor(0., device=loss.device), loss)
+        return loss.mean()
 
-    def forward(self, preds, labels):
-        if np.isnan(self.null_val):
-            mask = ~torch.isnan(labels)
-        else:
-            mask = torch.ne(labels, self.null_val)
-        mask = mask.to(torch.float32)
-        mask /= torch.mean(mask)
-        mask = torch.where(torch.isnan(mask), torch.zeros_like(mask, device=preds.device), mask)
-        loss = torch.abs(preds - labels)
-        loss = loss * mask
-        loss = torch.where(torch.isnan(loss), torch.zeros_like(loss, device=preds.device), loss)
-        return torch.mean(loss)
+
+class MaskedMAELoss(MaskedLoss):
+    def forward(self, outputs: Tensor, targets: Tensor) -> Tensor:
+        mask = self.compute_mask(targets)
+        loss = F.l1_loss(outputs, targets, reduction='none') * mask
+        loss = torch.where(torch.isnan(loss), torch.tensor(0., device=loss.device), loss)
+        return loss.mean()

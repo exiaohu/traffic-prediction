@@ -1,3 +1,4 @@
+dgl
 scipy
 scikit-learn
 PyYAML

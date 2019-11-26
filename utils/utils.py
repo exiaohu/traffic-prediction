@@ -204,10 +204,14 @@ def test_model(model: nn.Module,
         steps += len(targets)
 
     # 性能
-    scores = evaluate(np.concatenate(predictions), np.concatenate(running_targets))
-    print(scores)
+    predictions, running_targets = np.concatenate(predictions), np.concatenate(running_targets)
+    scores = evaluate(predictions, running_targets)
+    print(json.dumps(scores, cls=JsonEncoder, indent=4))
     with open(os.path.join(folder, 'test-scores.json'), 'w+') as f:
-        json.dump(scores, f)
+        json.dump(scores, f, cls=JsonEncoder, indent=4)
+
+    with open(os.path.join(folder, 'test-results.npz'), 'w+') as f:
+        np.savez(f, predictions=predictions, targets=running_targets)
 
 
 def save_model(path: str, **save_dict):
@@ -254,3 +258,15 @@ class MultiStepWraper(nn.Module):
                 h = torch.cat([h, targets[:, i:i + 1]], 1)
                 h.requires_grad_()
         return torch.stack(preds, 1)
+
+
+class JsonEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return super(JsonEncoder, self).default(obj)
