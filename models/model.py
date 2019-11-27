@@ -1,7 +1,7 @@
 import math
 from typing import Tuple, List
 
-from torch import Tensor, nn
+from torch import nn, Tensor
 
 from networks.dcrnn import DCRNN
 from networks.dcrnn_model import DCRNNModel

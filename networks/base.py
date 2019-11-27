@@ -2,7 +2,22 @@ from typing import List
 
 import torch
 from torch import nn, Tensor, sparse
-from torch.nn import functional as F
+from torch.nn import functional as F, init
+
+
+class Linear(nn.Module):
+    def __init__(self, in_features, out_features, bias_start: float = 0.0):
+        super(Linear, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = nn.Parameter(Tensor(out_features, in_features))
+        self.bias = nn.Parameter(Tensor(out_features))
+
+        init.xavier_normal_(self.weight, gain=1.414)
+        init.constant_(self.bias, val=bias_start)
+
+    def forward(self, inputs):
+        return F.linear(inputs, self.weight, self.bias)
 
 
 class GraphConv(nn.Module):

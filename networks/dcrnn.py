@@ -11,7 +11,6 @@ from networks.base import GraphConv
 class DCGRUCell(nn.Module):
     def __init__(self, input_size: int, hidden_size: int, num_node: int, n_supports: int, k_hop: int):
         super(DCGRUCell, self).__init__()
-        self.num_node = num_node
         self.hidden_size = hidden_size
 
         self.ru_gate_g_conv = GraphConv(input_size + hidden_size, hidden_size * 2, num_node, n_supports, k_hop)
@@ -35,22 +34,21 @@ class DCRNNEncoder(nn.ModuleList):
         for _ in range(1, n_layers):
             self.append(DCGRUCell(hidden_size, hidden_size, num_node, n_supports, k_hop))
 
-    def forward(self, inputs: Tensor, supports: List[Tensor], states: Tensor = None) -> Tensor:
+    def forward(self, inputs: Tensor, supports: List[Tensor]) -> Tensor:
         """
         :param inputs: tensor, [B, T, N, input_size]
         :param supports: list of sparse tensors, each of shape [N, N]
-        :param states: None or tensor, [n_layers, B, N, hidden_size]
         :return: tensor, [n_layers, B, N, hidden_size]
         """
-        b, t, n, input_dim = inputs.shape
-        if states is None:
-            states = [torch.zeros(b, n, self.hidden_size, device=inputs.device, dtype=inputs.dtype)] * self.n_layers
+        b, t, n, _ = inputs.shape
+        dv, dt = inputs.device, inputs.dtype
 
-        outputs = [None] * t
-        for i_layer in range(self.n_layers):
+        states = list(torch.zeros(len(self), b, n, self.hidden_size, device=dv, dtype=dt))
+        inputs = list(inputs.transpose(0, 1))
+
+        for i_layer, gru in enumerate(self):
             for i_t in range(t):
-                outputs[i_t], states[i_layer] = self[i_layer](inputs[:, i_t], supports, states[i_layer])
-            inputs = torch.stack(outputs, 1)
+                inputs[i_t], states[i_layer] = gru(inputs[i_t], supports, states[i_layer])
         return torch.stack(states)
 
 

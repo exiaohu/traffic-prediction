@@ -3,7 +3,7 @@ import json
 import os
 import pickle
 import time
-from typing import Union, List
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -15,37 +15,6 @@ from .data import ZScoreScaler, get_datasets, get_dataloaders
 from .evaluate import evaluate
 
 
-def get_number_of_parameters(model: nn.Module):
-    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-    return sum([np.prod(p.size()) for p in model_parameters])
-
-
-def get_scheduler(name, optimizer, **kwargs):
-    return getattr(optim.lr_scheduler, name)(optimizer, **kwargs)
-
-
-def get_optimizer(name: str, parameters, **kwargs):
-    return getattr(optim, name)(parameters, **kwargs)
-
-
-def load_graph_data(pkl_filename):
-    sensor_ids, sensor_id_to_ind, adj_mx = load_pickle(pkl_filename)
-    return sensor_ids, sensor_id_to_ind, adj_mx
-
-
-def load_pickle(pickle_file):
-    try:
-        with open(pickle_file, 'rb') as f:
-            pickle_data = pickle.load(f)
-    except UnicodeDecodeError:
-        with open(pickle_file, 'rb') as f:
-            pickle_data = pickle.load(f, encoding='latin1')
-    except Exception as e:
-        print('Unable to load data ', pickle_file, ':', e)
-        raise
-    return pickle_data
-
-
 def train_model(model: nn.Module,
                 dataset: str,
                 batch_size: int,
@@ -54,11 +23,11 @@ def train_model(model: nn.Module,
                 folder: str,
                 trainer,
                 epochs: int,
-                device: Union[str, List[int]],
+                device,
                 max_grad_norm: float = None):
     datasets = get_datasets(dataset)
     dataloaders = get_dataloaders(datasets, batch_size)
-    scaler = ZScoreScaler(datasets['train'].std[0], datasets['train'].mean[0])
+    scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
 
     save_path = os.path.join(folder, 'best_model.pkl')
 
@@ -81,11 +50,7 @@ def train_model(model: nn.Module,
 
     since = time.perf_counter()
 
-    if isinstance(device, str):
-        model = model.to(device)
-    elif isinstance(device, list):
-        model = nn.DataParallel(model, device)
-        device = f'cuda:{device[0]}'
+    model = model.to(device)
 
     print(model)
     print(f'Trainable parameters: {get_number_of_parameters(model)}.')
@@ -93,7 +58,7 @@ def train_model(model: nn.Module,
     try:
         for epoch in range(begin_epoch, begin_epoch + epochs):
 
-            running_loss, running_metrics = {phase: 0.0 for phase in phases}, {phase: dict() for phase in phases}
+            running_loss, running_metrics = defaultdict(float), dict()
             for phase in phases:
                 if phase == 'train':
                     model.train()
@@ -108,7 +73,7 @@ def train_model(model: nn.Module,
                     with torch.no_grad():
                         inputs[..., 0] = scaler.transform(inputs[..., 0])
                         inputs = inputs.to(device)
-                        targets = scaler.transform(targets)
+                        targets[..., 0] = scaler.transform(targets[..., 0])
                         targets = targets.to(device)
 
                     with torch.set_grad_enabled(phase == 'train'):
@@ -131,12 +96,10 @@ def train_model(model: nn.Module,
                         f'{phase:5} epoch: {epoch:3}, {phase:5} loss: {running_loss[phase] / steps:3.6}')
 
                     # For the issue that the CPU memory increases while training. DO NOT know why, but it works.
-                    # torch.cuda.empty_cache()
+                    torch.cuda.empty_cache()
 
                 # 性能
-                scores = evaluate(np.concatenate(predictions), np.concatenate(running_targets))
-
-                running_metrics[phase] = scores
+                running_metrics[phase] = evaluate(np.concatenate(predictions), np.concatenate(running_targets))
 
                 if phase == 'val':
                     if running_loss['val'] < best_val_loss:
@@ -158,7 +121,7 @@ def train_model(model: nn.Module,
             writer.add_scalars('Loss', {
                 f'{phase} loss': running_loss[phase] / len(dataloaders[phase].dataset) for phase in phases},
                                global_step=epoch)
-    except ValueError:
+    except (ValueError, KeyboardInterrupt):
         time_elapsed = time.perf_counter() - since
         print(f"cost {time_elapsed} seconds")
 
@@ -175,10 +138,10 @@ def test_model(model: nn.Module,
                batch_size: int,
                trainer,
                folder: str,
-               device: Union[str, List[int]]):
+               device):
     datasets = get_datasets(dataset)
     dataloaders = get_dataloaders(datasets, batch_size)
-    scaler = ZScoreScaler(datasets['train'].std[0], datasets['train'].mean[0])
+    scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
 
     if isinstance(device, str):
         model = model.to(device)
@@ -188,30 +151,28 @@ def test_model(model: nn.Module,
 
     model.eval()
 
-    steps, predictions, running_targets = 0, list(), list()
+    predictions, running_targets = list(), list()
     for step, (inputs, targets) in tqdm(enumerate(dataloaders['test']), 'Test model'):
-        running_targets.append(targets.numpy())
-
-        inputs[..., 0] = scaler.transform(inputs[..., 0])
-        inputs = inputs.to(device)
-        targets = scaler.transform(targets)
-        targets = targets.to(device)
-
         with torch.no_grad():
-            outputs, loss = trainer.train(inputs, targets, 'test')
-            predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
+            running_targets.append(targets.numpy())
 
-        steps += len(targets)
+            inputs[..., 0] = scaler.transform(inputs[..., 0])
+            inputs = inputs.to(device)
+            targets[..., 0] = scaler.transform(targets[..., 0])
+            targets = targets.to(device)
+
+            outputs, _ = trainer.train(inputs, targets, 'test')
+            predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
 
     # 性能
     predictions, running_targets = np.concatenate(predictions), np.concatenate(running_targets)
     scores = evaluate(predictions, running_targets)
+    print('test results:')
     print(json.dumps(scores, cls=JsonEncoder, indent=4))
     with open(os.path.join(folder, 'test-scores.json'), 'w+') as f:
         json.dump(scores, f, cls=JsonEncoder, indent=4)
 
-    with open(os.path.join(folder, 'test-results.npz'), 'w+') as f:
-        np.savez(f, predictions=predictions, targets=running_targets)
+    np.savez(os.path.join(folder, 'test-results.npz'), predictions=predictions, targets=running_targets)
 
 
 def save_model(path: str, **save_dict):
@@ -270,3 +231,34 @@ class JsonEncoder(json.JSONEncoder):
             return obj.tolist()
         else:
             return super(JsonEncoder, self).default(obj)
+
+
+def get_number_of_parameters(model: nn.Module):
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    return sum([np.prod(p.size()) for p in model_parameters])
+
+
+def get_scheduler(name, optimizer, **kwargs):
+    return getattr(optim.lr_scheduler, name)(optimizer, **kwargs)
+
+
+def get_optimizer(name: str, parameters, **kwargs):
+    return getattr(optim, name)(parameters, **kwargs)
+
+
+def load_graph_data(pkl_filename):
+    sensor_ids, sensor_id_to_ind, adj_mx = load_pickle(pkl_filename)
+    return sensor_ids, sensor_id_to_ind, adj_mx
+
+
+def load_pickle(pickle_file):
+    try:
+        with open(pickle_file, 'rb') as f:
+            pickle_data = pickle.load(f)
+    except UnicodeDecodeError:
+        with open(pickle_file, 'rb') as f:
+            pickle_data = pickle.load(f, encoding='latin1')
+    except Exception as e:
+        print('Unable to load data ', pickle_file, ':', e)
+        raise
+    return pickle_data

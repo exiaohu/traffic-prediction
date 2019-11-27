@@ -1,11 +1,11 @@
 name: Original-Model
 
+device: 'cuda:0'
 data:
   dataset: METR-LA
   batch-size: 64
 
 train:
-  device: 'cuda:0'
   epochs: 50
 
 optimizer:
