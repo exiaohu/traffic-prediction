@@ -1,12 +1,15 @@
 from typing import Tuple, List
 
+import torch
 from torch import nn, Tensor
 
 from networks.dcrnn import DCRNN
 from networks.fc_lstm import FCLSTM
 from networks.ours import Ours
+from networks.st_metanet import STMetaNet
 from networks.stgcn import STGCN
 from utils import get_graph, scaled_laplacian, convert_scipy_to_torch_sparse
+from utils.stmetanet import get_geo_feature
 
 
 class Trainer:
@@ -33,6 +36,11 @@ def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[n
     elif name == 'FCLSTM':
         model = FCLSTM(**config)
         return model, FCLSTMTrainer(model, loss)
+    elif name == 'STMETANET':
+        n_neighbors = config.pop('n_neighbors')
+        features, graph = get_geo_feature(n_neighbors)
+        model = STMetaNet(graph, **config)
+        return model, STMETANETTrainer(model, loss, features)
     elif name == 'Ours':
         model = Ours(**config)
         return model, OursTrainer(model, loss)
@@ -78,4 +86,20 @@ class OursTrainer(Trainer):
         else:
             outputs, supports = self.model(inputs)
         loss = self.loss(outputs, targets)  # - 100 * distributions.Categorical(probs=supports).entropy().mean()
+        return outputs, loss
+
+
+class STMETANETTrainer(Trainer):
+    def __init__(self, model: DCRNN, loss, features: Tensor):
+        super(STMETANETTrainer, self).__init__(model, loss)
+        self.features = features
+        self.train_batch_seen: int = 0
+
+    def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
+        if phase == 'train':
+            self.train_batch_seen += 1
+        i_targets = targets if phase == 'train' else None
+        outputs = self.model(torch.tensor(self.features, device=inputs.device, dtype=inputs.dtype),
+                             inputs, i_targets, self.train_batch_seen)
+        loss = self.loss(outputs, targets)
         return outputs, loss
