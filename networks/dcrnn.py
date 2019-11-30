@@ -28,7 +28,6 @@ class DCGRUCell(nn.Module):
 class DCRNNEncoder(nn.ModuleList):
     def __init__(self, input_size: int, hidden_size: int, num_node: int, n_supports: int, k_hop: int, n_layers: int):
         super(DCRNNEncoder, self).__init__()
-        self.n_layers = n_layers
         self.hidden_size = hidden_size
         self.append(DCGRUCell(input_size, hidden_size, num_node, n_supports, k_hop))
         for _ in range(1, n_layers):
@@ -46,9 +45,9 @@ class DCRNNEncoder(nn.ModuleList):
         states = list(torch.zeros(len(self), b, n, self.hidden_size, device=dv, dtype=dt))
         inputs = list(inputs.transpose(0, 1))
 
-        for i_layer, gru in enumerate(self):
+        for i_layer, cell in enumerate(self):
             for i_t in range(t):
-                inputs[i_t], states[i_layer] = gru(inputs[i_t], supports, states[i_layer])
+                inputs[i_t], states[i_layer] = cell(inputs[i_t], supports, states[i_layer])
         return torch.stack(states)
 
 
@@ -77,6 +76,7 @@ class DCRNNDecoder(nn.ModuleList):
         inputs = torch.zeros(b, n, self.output_size, device=states.device, dtype=states.dtype)
 
         states = list(states)
+        assert len(states) == n_layers
 
         new_outputs = list()
         for i_t in range(self.n_preds):

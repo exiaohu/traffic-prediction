@@ -11,7 +11,7 @@ from tensorboardX import SummaryWriter
 from torch import nn, optim
 from tqdm import tqdm
 
-from .data import ZScoreScaler, get_datasets, get_dataloaders
+from .data import get_datasets, get_dataloaders
 from .evaluate import evaluate
 
 
@@ -27,7 +27,7 @@ def train_model(model: nn.Module,
                 max_grad_norm: float = None):
     datasets = get_datasets(dataset)
     dataloaders = get_dataloaders(datasets, batch_size)
-    scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
+    # scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
 
     save_path = os.path.join(folder, 'best_model.pkl')
 
@@ -36,8 +36,8 @@ def train_model(model: nn.Module,
 
         model.load_state_dict(save_dict['model_state_dict'])
         optimizer.load_state_dict(save_dict['optimizer_state_dict'])
-        best_val_loss = save_dict['best_val_loss']
 
+        best_val_loss = save_dict['best_val_loss']
         begin_epoch = save_dict['epoch'] + 1
     else:
         save_dict = dict()
@@ -71,9 +71,9 @@ def train_model(model: nn.Module,
                     running_targets.append(targets.numpy())
 
                     with torch.no_grad():
-                        inputs[..., 0] = scaler.transform(inputs[..., 0])
+                        # inputs[..., 0] = scaler.transform(inputs[..., 0])
                         inputs = inputs.to(device)
-                        targets[..., 0] = scaler.transform(targets[..., 0])
+                        # targets[..., 0] = scaler.transform(targets[..., 0])
                         targets = targets.to(device)
 
                     with torch.set_grad_enabled(phase == 'train'):
@@ -87,7 +87,8 @@ def train_model(model: nn.Module,
                             optimizer.step()
 
                     with torch.no_grad():
-                        predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
+                        # predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
+                        predictions.append(outputs.cpu().numpy())
 
                     running_loss[phase] += loss * len(targets)
                     steps += len(targets)
@@ -141,7 +142,13 @@ def test_model(model: nn.Module,
                device):
     datasets = get_datasets(dataset)
     dataloaders = get_dataloaders(datasets, batch_size)
-    scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
+    # scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
+
+    save_path = os.path.join(folder, 'best_model.pkl')
+
+    save_dict = torch.load(save_path)
+
+    model.load_state_dict(save_dict['model_state_dict'])
 
     if isinstance(device, str):
         model = model.to(device)
@@ -156,13 +163,14 @@ def test_model(model: nn.Module,
         with torch.no_grad():
             running_targets.append(targets.numpy())
 
-            inputs[..., 0] = scaler.transform(inputs[..., 0])
+            # inputs[..., 0] = scaler.transform(inputs[..., 0])
             inputs = inputs.to(device)
-            targets[..., 0] = scaler.transform(targets[..., 0])
+            # targets[..., 0] = scaler.transform(targets[..., 0])
             targets = targets.to(device)
 
             outputs, _ = trainer.train(inputs, targets, 'test')
-            predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
+            # predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
+            predictions.append(outputs.cpu().numpy())
 
     # 性能
     predictions, running_targets = np.concatenate(predictions), np.concatenate(running_targets)

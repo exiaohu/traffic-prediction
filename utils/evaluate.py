@@ -10,7 +10,7 @@ def evaluate(predictions: np.ndarray, targets: np.ndarray):
     :param targets: np.ndarray, shape [n_samples, 12, n_nodes, n_features]
     :return: a dict [str -> float]
     """
-    assert targets.shape == predictions.shape and targets.shape[1] == 12
+    assert targets.shape == predictions.shape and targets.shape[1] == 12, f'{targets.shape}/{predictions.shape}'
     n_samples = targets.shape[0]
     scores = defaultdict(dict)
     y_true, y_pred = np.reshape(targets[:, :3], (n_samples, -1)), np.reshape(predictions[:, :3], (n_samples, -1))
@@ -41,7 +41,12 @@ def masked_rmse_np(preds, labels, null_val=np.nan):
 
 def masked_mse_np(preds, labels, null_val=np.nan):
     with np.errstate(divide='ignore', invalid='ignore'):
-        mask = compute_mask(labels, null_val)
+        if np.isnan(null_val):
+            mask = ~np.isnan(labels)
+        else:
+            mask = np.not_equal(labels, null_val)
+        mask = mask.astype('float32')
+        mask /= np.mean(mask)
         mse = np.square(np.subtract(preds, labels)).astype('float32')
         mse = np.nan_to_num(mse * mask)
         return np.mean(mse)
@@ -49,7 +54,12 @@ def masked_mse_np(preds, labels, null_val=np.nan):
 
 def masked_mae_np(preds, labels, null_val=np.nan):
     with np.errstate(divide='ignore', invalid='ignore'):
-        mask = compute_mask(labels, null_val)
+        if np.isnan(null_val):
+            mask = ~np.isnan(labels)
+        else:
+            mask = np.not_equal(labels, null_val)
+        mask = mask.astype('float32')
+        mask /= np.mean(mask)
         mae = np.abs(np.subtract(preds, labels)).astype('float32')
         mae = np.nan_to_num(mae * mask)
         return np.mean(mae)
@@ -57,29 +67,24 @@ def masked_mae_np(preds, labels, null_val=np.nan):
 
 def masked_mape_np(preds, labels, null_val=np.nan):
     with np.errstate(divide='ignore', invalid='ignore'):
-        mask = compute_mask(labels, null_val)
+        if np.isnan(null_val):
+            mask = ~np.isnan(labels)
+        else:
+            mask = np.not_equal(labels, null_val)
+        mask = mask.astype('float32')
+        mask /= np.mean(mask)
         mape = np.abs(np.divide(np.subtract(preds, labels).astype('float32'), labels))
         mape = np.nan_to_num(mask * mape)
         return np.mean(mape)
 
 
-def compute_mask(labels, null_val):
-    if np.isnan(null_val):
-        mask = ~np.isnan(labels)
-    else:
-        mask = np.not_equal(labels, null_val)
-    mask = mask.astype('float32')
-    mask /= np.mean(mask)
-    return mask
-
-
 def mae_np(y_pred, y_true):
-    return np.mean(np.abs(np.subtract(y_true, y_pred)))
+    return np.mean(np.abs(np.subtract(y_pred, y_true)))
 
 
 def mse_np(y_pred, y_true):
-    return np.mean(np.square(np.subtract(y_true, y_pred)))
+    return np.mean(np.square(np.subtract(y_pred, y_true)))
 
 
 def rmse_np(y_pred, y_true):
-    return np.sqrt(mse_np(y_true, y_pred))
+    return np.sqrt(mse_np(y_pred, y_true))

@@ -1,6 +1,5 @@
 dgl
 scipy
-scikit-learn
 PyYAML
 tqdm
 networkx
