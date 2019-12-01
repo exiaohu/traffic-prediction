@@ -4,11 +4,13 @@ import os
 import pickle
 import time
 from collections import defaultdict
+from typing import Dict
 
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
 from torch import nn, optim
+from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from .data import get_datasets, get_dataloaders
@@ -16,7 +18,7 @@ from .evaluate import evaluate
 
 
 def train_model(model: nn.Module,
-                dataset: str,
+                datasets: Dict[str, Dataset],
                 batch_size: int,
                 optimizer,
                 scheduler,
@@ -25,7 +27,6 @@ def train_model(model: nn.Module,
                 epochs: int,
                 device,
                 max_grad_norm: float = None):
-    datasets = get_datasets(dataset)
     dataloaders = get_dataloaders(datasets, batch_size)
     # scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
 
@@ -135,12 +136,11 @@ def train_model(model: nn.Module,
 
 
 def test_model(model: nn.Module,
-               dataset: str,
+               datasets: Dict[str, Dataset],
                batch_size: int,
                trainer,
                folder: str,
                device):
-    datasets = get_datasets(dataset)
     dataloaders = get_dataloaders(datasets, batch_size)
     # scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
 

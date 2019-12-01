@@ -4,6 +4,8 @@ device: 'cuda:1'
 data:
   dataset: METR-LA
   batch-size: 64
+  input_dim: 9
+  output_dim: 1
 
 train:
   epochs: 50

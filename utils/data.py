@@ -20,7 +20,9 @@ class ZScoreScaler:
 
 
 class TrafficPredictionDataset(Dataset):
-    def __init__(self, data_path: str):
+    def __init__(self, data_path: str, input_dim: int, output_dim: int):
+        self.input_dim = input_dim
+        self.output_dim = output_dim
         data = np.load(data_path)
 
         # [num_samples, seq_length, num_nodes, num_features]
@@ -33,7 +35,7 @@ class TrafficPredictionDataset(Dataset):
         return len(self.inputs)
 
     def __getitem__(self, idx: int):
-        x, y = self.inputs[idx], self.targets[idx][..., :1]
+        x, y = self.inputs[idx][..., :self.input_dim], self.targets[idx][..., :self.output_dim]
 
         return torch.tensor(x).float(), torch.tensor(y).float()
 
@@ -46,12 +48,12 @@ class TrafficPredictionDataset(Dataset):
         return self.inputs.mean(tuple(range(len(self.inputs.shape) - 1)))
 
 
-def get_datasets(dataset: str) -> Dict[str, TrafficPredictionDataset]:
-    return {key: TrafficPredictionDataset(os.path.join('data', dataset, f'{key}.npz')) for key in
+def get_datasets(dataset: str, input_dim: int, output_dim: int) -> Dict[str, TrafficPredictionDataset]:
+    return {key: TrafficPredictionDataset(os.path.join('data', dataset, f'{key}.npz'), input_dim, output_dim) for key in
             ['train', 'val', 'test']}
 
 
-def get_dataloaders(datasets: Dict[str, TrafficPredictionDataset],
+def get_dataloaders(datasets: Dict[str, Dataset],
                     batch_size: int,
                     num_workers: int = 16) -> Dict[str, DataLoader]:
     return {key: DataLoader(dataset=ds,

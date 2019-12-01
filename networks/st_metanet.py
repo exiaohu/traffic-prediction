@@ -12,9 +12,7 @@ from torch import nn, Tensor
 class MultiLayerPerception(nn.Sequential):
     def __init__(self, hiddens: List[int], hidden_act, out_act: bool):
         super(MultiLayerPerception, self).__init__()
-        for i in range(len(hiddens)):
-            if i == 0:
-                continue
+        for i in range(1, len(hiddens)):
             self.add_module(f'Layer{i}', nn.Linear(hiddens[i - 1], hiddens[i]))
             if i < len(hiddens) - 1 or out_act:
                 self.add_module(f'Activation{i}', hidden_act())
@@ -112,8 +110,7 @@ class NormalGRUCell(RNNCell):
 
 
 class GraphAttNet(nn.Module):
-    def __init__(self, dist: np.ndarray, edge: list, hid_size: int, feat_size: int,
-                 meta_hiddens: List[int] = None):
+    def __init__(self, dist: np.ndarray, edge: list, hid_size: int, feat_size: int, meta_hiddens: List[int]):
         super(GraphAttNet, self).__init__()
         self.hidden_size = hid_size
         self.feature_size = feat_size
@@ -204,40 +201,82 @@ class MetaGAT(GraphAttNet):
 
 
 class STMetaEncoder(nn.Module):
-    def __init__(self, input_dim: int, hidden_size: List[int], feat_size: int, meta_hiddens: List[int],
-                 graph: Tuple[np.ndarray, list, list]):
+    def __init__(self, input_dim: int, rnn_types: List[str], rnn_hiddens: List[int], feat_size: int,
+                 meta_hiddens: List[int], graph: Tuple[np.ndarray, list, list]):
         super(STMetaEncoder, self).__init__()
 
-        self.gru1 = NormalGRUCell(input_dim, hidden_size[0])
         dist, e_in, e_out = graph
-        self.g1 = MetaGAT(dist.T, e_in, hidden_size[0], feat_size, meta_hiddens)
-        self.g2 = MetaGAT(dist, e_out, hidden_size[0], feat_size, meta_hiddens)
-        self.gru2 = MetaGRUCell(hidden_size[0], hidden_size[1], feat_size, meta_hiddens)
+
+        grus, gats = list(), list()
+
+        rnn_hiddens = [input_dim] + rnn_hiddens
+        for i, rnn_type in enumerate(rnn_types):
+            in_dim, out_dim = rnn_hiddens[i], rnn_hiddens[i + 1]
+            if rnn_type == 'NormalGRU':
+                grus.append(NormalGRUCell(in_dim, out_dim))
+            elif rnn_type == 'MetaGRU':
+                grus.append(MetaGRUCell(in_dim, out_dim, feat_size, meta_hiddens))
+            else:
+                raise ValueError(f'{rnn_type} is not implemented.')
+
+            if i == len(rnn_types) - 1:
+                break
+
+            g1 = MetaGAT(dist.T, e_in, out_dim, feat_size, meta_hiddens)
+            g2 = MetaGAT(dist, e_out, out_dim, feat_size, meta_hiddens)
+            gats.append(nn.ModuleList([g1, g2]))
+
+        self.grus = nn.ModuleList(grus)
+        self.gats = nn.ModuleList(gats)
 
     def forward(self, feature: Tensor, data: Tensor) -> List[Tensor]:
         """
         :param feature: tensor, [N, F]
         :param data: tensor, [B, T, N, F]
-        :return:
+        :return: list of tensors
         """
-        data, state1 = self.gru1(feature, data)
-        data = self.g2(data, feature) + self.g1(data, feature)
-        data, state2 = self.gru2(feature, data)
-        return [state1, state2]
+        states = list()
+        for depth, (g1, g2) in enumerate(self.gats):
+            data, state = self.grus[depth](feature, data)
+            states.append(state)
+            data = g1(data, feature) + g2(data, feature)
+        else:
+            _, state = self.grus[-1](feature, data)
+            states.append(state)
+        return states
 
 
 class STMetaDecoder(nn.Module):
-    def __init__(self, n_preds: int, output_dim: int, hidden_size: List[int], feat_size: int,
+    def __init__(self, n_preds: int, output_dim: int, rnn_types: List[str], rnn_hiddens: List[int], feat_size: int,
                  meta_hiddens: List[int], graph: Tuple[np.ndarray, list, list]):
         super(STMetaDecoder, self).__init__()
         self.output_dim = output_dim
         self.n_preds = n_preds
-        self.gru1 = NormalGRUCell(output_dim, hidden_size[0])
+
         dist, e_in, e_out = graph
-        self.g1 = MetaGAT(dist.T, e_in, hidden_size[0], feat_size, meta_hiddens)
-        self.g2 = MetaGAT(dist, e_out, hidden_size[0], feat_size, meta_hiddens)
-        self.gru2 = MetaGRUCell(hidden_size[0], hidden_size[1], feat_size, meta_hiddens)
-        self.out = nn.Linear(hidden_size[1], output_dim)
+
+        grus, gats = list(), list()
+
+        rnn_hiddens = [output_dim] + rnn_hiddens
+        for i, rnn_type in enumerate(rnn_types):
+            in_dim, out_dim = rnn_hiddens[i], rnn_hiddens[i + 1]
+            if rnn_type == 'NormalGRU':
+                grus.append(NormalGRUCell(in_dim, out_dim))
+            elif rnn_type == 'MetaGRU':
+                grus.append(MetaGRUCell(in_dim, out_dim, feat_size, meta_hiddens))
+            else:
+                raise ValueError(f'{rnn_type} is not implemented.')
+
+            if i == len(rnn_types) - 1:
+                break
+
+            g1 = MetaGAT(dist.T, e_in, out_dim, feat_size, meta_hiddens)
+            g2 = MetaGAT(dist, e_out, out_dim, feat_size, meta_hiddens)
+            gats.append(nn.ModuleList([g1, g2]))
+
+        self.grus = nn.ModuleList(grus)
+        self.gats = nn.ModuleList(gats)
+        self.out = nn.Linear(rnn_hiddens[1], output_dim)
 
     def forward(self, feature: Tensor, states: List[Tensor], targets: Tensor = None,
                 teacher_force: bool = 0.5) -> Tensor:
@@ -253,9 +292,11 @@ class STMetaDecoder(nn.Module):
 
         outputs = list()
         for i_pred in range(self.n_preds):
-            inputs, states[0] = self.gru1.one_step(feature, inputs, states[0])
-            inputs = self.g2(inputs, feature) + self.g1(inputs, feature)
-            inputs, states[1] = self.gru2.one_step(feature, inputs, states[1])
+            for depth, (g1, g2) in enumerate(self.gats):
+                inputs, state = self.grus[depth].one_step(feature, inputs)
+                inputs = g1(state, feature) + g2(state, feature)
+            else:
+                inputs, state = self.grus[-1].one_step(feature, inputs)
             inputs = self.out(inputs)
             outputs.append(inputs)
             if targets is not None and random.random() < teacher_force:
@@ -270,17 +311,18 @@ class STMetaNet(nn.Module):
                  input_dim: int,
                  output_dim: int,
                  cl_decay_steps: int,
+                 rnn_types: List[str],
                  rnn_hiddens: List[int],
                  meta_hiddens: List[int],
                  geo_hiddens: List[int]):
         super(STMetaNet, self).__init__()
         feat_size = geo_hiddens[-1]
         self.cl_decay_steps = cl_decay_steps
-        self.encoder = STMetaEncoder(input_dim, rnn_hiddens, feat_size, meta_hiddens, graph)
-        self.decoder = STMetaDecoder(n_preds, output_dim, rnn_hiddens, feat_size, meta_hiddens, graph)
+        self.encoder = STMetaEncoder(input_dim, rnn_types, rnn_hiddens, feat_size, meta_hiddens, graph)
+        self.decoder = STMetaDecoder(n_preds, output_dim, rnn_types, rnn_hiddens, feat_size, meta_hiddens, graph)
         self.geo_encoder = MultiLayerPerception(geo_hiddens, hidden_act=nn.ReLU, out_act=True)
 
-    def forward(self, feature: Tensor, inputs: Tensor, targets: Tensor = None, batch_seen: int = None) -> Tensor:
+    def forward(self, feature: Tensor, inputs: Tensor, targets: Tensor = None, batch_seen: int = 0) -> Tensor:
         """
         dynamic convolutional recurrent neural network
         :param feature: [N, d]
@@ -312,3 +354,4 @@ class STMetaNet(nn.Module):
 #     states = me(feature, data)
 #     print(states[0].shape, states[1].shape)
 #     outputs = md(feature, states)
+# m = STMetaNet((dist, edge1, edge2), 12, 2, 1, 2000, ['NormalGRU', 'MetaGRU'], [], [16, 2], [32, 32])

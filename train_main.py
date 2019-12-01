@@ -7,7 +7,7 @@ import torch
 import yaml
 
 from models import create_model
-from utils import train_model, get_optimizer, get_loss, get_scheduler, test_model
+from utils import train_model, get_optimizer, get_loss, get_scheduler, test_model, get_datasets
 
 
 def train(_config, resume: bool = False, test: bool = False):
@@ -45,9 +45,11 @@ def train(_config, resume: bool = False, test: bool = False):
     with open(os.path.join(save_folder, 'config.yaml'), 'w+') as _f:
         yaml.safe_dump(_config, _f)
 
+    datasets = get_datasets(dataset, _config['data']['input_dim'], _config['data']['output_dim'])
+
     if not test:
         train_model(model=model,
-                    dataset=dataset,
+                    datasets=datasets,
                     batch_size=_config['data']['batch-size'],
                     optimizer=optimizer,
                     scheduler=scheduler,
@@ -57,7 +59,7 @@ def train(_config, resume: bool = False, test: bool = False):
                     **_config['train'])
 
     test_model(model=model,
-               dataset=dataset,
+               datasets=datasets,
                batch_size=_config['data']['batch-size'],
                trainer=trainer,
                folder=save_folder,
