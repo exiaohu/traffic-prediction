@@ -13,7 +13,7 @@ from torch import nn, optim
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from .data import get_datasets, get_dataloaders
+from .data import get_dataloaders
 from .evaluate import evaluate
 
 
@@ -188,11 +188,6 @@ def save_model(path: str, **save_dict):
     torch.save(save_dict, path)
 
 
-def get_graph(dataset: str):
-    _, _, g = load_graph_data(os.path.join('data', dataset, 'adj_mx.pkl'))
-    return g
-
-
 class MultiStepWraper(nn.Module):
 
     def __init__(self, model: nn.Module):
@@ -252,11 +247,6 @@ def get_scheduler(name, optimizer, **kwargs):
 
 def get_optimizer(name: str, parameters, **kwargs):
     return getattr(optim, name)(parameters, **kwargs)
-
-
-def load_graph_data(pkl_filename):
-    sensor_ids, sensor_id_to_ind, adj_mx = load_pickle(pkl_filename)
-    return sensor_ids, sensor_id_to_ind, adj_mx
 
 
 def load_pickle(pickle_file):

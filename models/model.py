@@ -5,10 +5,11 @@ from torch import nn, Tensor
 
 from networks.dcrnn import DCRNN
 from networks.fc_lstm import FCLSTM
+from networks.graph_wavenet import GWNet
 from networks.ours import Ours
 from networks.st_metanet import STMetaNet
 from networks.stgcn import STGCN
-from utils import get_graph, scaled_laplacian, convert_scipy_to_torch_sparse
+from utils import load_graph_data, sparse_scipy2torch
 from utils.stmetanet import get_geo_feature
 
 
@@ -27,12 +28,8 @@ def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[n
         return model, STGCNTrainer(model, loss)
     elif name == 'DCRNN':
         model = DCRNN(**config)
-        graph = get_graph(dataset)
-        graph = scaled_laplacian(graph)
-        graph = convert_scipy_to_torch_sparse(graph).to(device)
-        # g1, g2 = random_walk_matrix(graph), reverse_random_walk_matrix(graph)
-        # g1, g2 = convert_scipy_to_torch_sparse(g1).to(device), convert_scipy_to_torch_sparse(g2).to(device)
-        return model, DCRNNTrainer(model, loss, [graph])
+        supports = [sparse_scipy2torch(graph).to(device) for graph in load_graph_data(dataset, 'scalap')]
+        return model, DCRNNTrainer(model, loss, supports)
     elif name == 'FCLSTM':
         model = FCLSTM(**config)
         return model, FCLSTMTrainer(model, loss)
@@ -41,6 +38,13 @@ def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[n
         features, graph = get_geo_feature(n_neighbors)
         model = STMetaNet(graph, **config)
         return model, STMETANETTrainer(model, loss, features)
+    elif name == 'GWNET':
+        adjtype, randomadj = config.pop('adjtype'), config.pop('randomadj')
+        supports = [torch.tensor(graph.todense(), dtype=torch.float32, device=device) for graph in
+                    load_graph_data(dataset, adjtype)]
+        aptinit = None if randomadj else supports[0]
+        model = GWNet(device, supports=supports, aptinit=aptinit, **config)
+        return model, GWNetTrainer(model, loss)
     elif name == 'Ours':
         model = Ours(**config)
         return model, OursTrainer(model, loss)
@@ -101,5 +105,12 @@ class STMETANETTrainer(Trainer):
         i_targets = targets if phase == 'train' else None
         outputs = self.model(torch.tensor(self.features, device=inputs.device, dtype=inputs.dtype),
                              inputs, i_targets, self.train_batch_seen)
+        loss = self.loss(outputs, targets)
+        return outputs, loss
+
+
+class GWNetTrainer(Trainer):
+    def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
+        outputs = self.model(inputs.transpose(1, 3))
         loss = self.loss(outputs, targets)
         return outputs, loss

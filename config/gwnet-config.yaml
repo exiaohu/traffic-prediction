@@ -1,0 +1,54 @@
+name: GRAPH-WAVENET
+
+device: 1
+data:
+  dataset: METR-LA
+  batch-size: 64
+  input_dim: 2
+  output_dim: 1
+
+train:
+  epochs: 100
+  max_grad_norm: 5
+
+optimizer:
+  name: Adam
+  Adam:
+    lr: 0.001
+    weight_decay: 0.0001
+
+loss:
+  name: MaskedMAELoss
+
+model:
+  name: GWNET
+  GWNET:
+    adjtype: doubletransition
+    randomadj: true
+    addaptadj: true
+    gcn_bool: true
+    num_nodes: 207
+    dropout: 0.3
+    in_dim: 2
+    out_dim: 12
+    residual_channels: 32
+    dilation_channels: 32
+    skip_channels: 256
+    end_channels: 512
+    kernel_size: 2
+    blocks: 4
+    layers: 2
+
+scheduler:
+  name: ReduceLROnPlateau
+  ReduceLROnPlateau:
+    factor: 0.1
+    patience: 5
+    threshold: 0.1
+    min_lr: 0.000002
+  StepLR:
+    step_size: 10
+    gamma: 0.1
+  MultiStepLR:
+    milestones: [1, 5, 10, 15, 20]
+    gamma: 0.1

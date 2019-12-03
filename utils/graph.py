@@ -1,10 +1,13 @@
-from typing import Union
+import os
+from typing import Union, List
 
 import numpy as np
 import scipy.sparse as sp
 import torch
 from scipy.sparse.linalg import eigsh
 from torch import sparse
+
+from .utils import load_pickle
 
 
 def normalized_laplacian(w: np.ndarray) -> sp.coo_matrix:
@@ -34,7 +37,7 @@ def scaled_laplacian(w: np.ndarray, lambda_max: Union[float, None] = 2., undirec
         w = np.maximum.reduce([w, w.T])
     lp = normalized_laplacian(w)
     if lambda_max is None:
-        lambda_max, _ = eigsh(lp, 1, which='LM')
+        lambda_max, _ = eigsh(lp.todense(), 1, which='LM')
         lambda_max = lambda_max[0]
     lp = sp.csr_matrix(lp)
     m, _ = lp.shape
@@ -81,7 +84,7 @@ def first_approx(w, n):
     return np.identity(n) + np.matmul(np.matmul(sinv_d, a), sinv_d)
 
 
-def convert_scipy_to_torch_sparse(w: sp.coo_matrix):
+def sparse_scipy2torch(w: sp.coo_matrix):
     """
     build pytorch sparse tensor from scipy sparse matrix
     reference: https://stackoverflow.com/questions/50665141
@@ -91,3 +94,20 @@ def convert_scipy_to_torch_sparse(w: sp.coo_matrix):
     i = torch.tensor(np.vstack((w.row, w.col)).astype(int)).long()
     v = torch.tensor(w.data).float()
     return sparse.FloatTensor(i, v, torch.Size(shape))
+
+
+def load_graph_data(dataset: str, graph_type: str) -> List[sp.coo_matrix]:
+    _, _, adj_mx = load_pickle(os.path.join('data', dataset, 'adj_mx.pkl'))
+    if graph_type == "scalap":
+        adj = [scaled_laplacian(adj_mx)]
+    elif graph_type == "normlap":
+        adj = [normalized_laplacian(adj_mx)]
+    elif graph_type == "transition":
+        adj = [random_walk_matrix(adj_mx)]
+    elif graph_type == "doubletransition":
+        adj = [random_walk_matrix(adj_mx), reverse_random_walk_matrix(adj_mx)]
+    elif graph_type == "identity":
+        adj = [sp.identity(adj_mx.shape[0], dtype=np.float32, format='coo')]
+    else:
+        raise ValueError(f"graph type {graph_type} not defined")
+    return adj
