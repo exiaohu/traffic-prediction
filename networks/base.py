@@ -2,22 +2,29 @@ from typing import List
 
 import torch
 from torch import nn, Tensor, sparse
-from torch.nn import functional as F, init
+from torch.nn import functional as F
 
 
-class Linear(nn.Module):
-    def __init__(self, in_features, out_features, bias_start: float = 0.0):
-        super(Linear, self).__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.weight = nn.Parameter(Tensor(out_features, in_features))
-        self.bias = nn.Parameter(Tensor(out_features))
+class SelfAttention(nn.Module):
+    def __init__(self, n_hidden: int):
+        super(SelfAttention, self).__init__()
+        self.projector = nn.Sequential(
+            nn.Linear(n_hidden, 64),
+            nn.ReLU(True),
+            nn.Linear(64, 32),
+            nn.ReLU(True),
+            nn.Linear(32, 1)
+        )
 
-        init.xavier_normal_(self.weight, gain=1.414)
-        init.constant_(self.bias, val=bias_start)
-
-    def forward(self, inputs):
-        return F.linear(inputs, self.weight, self.bias)
+    def forward(self, inputs: Tensor):
+        """
+        :param inputs: tensor, [B, n_hist, N, n_hidden]
+        :return: tensor, [B, N, n_hidden]
+        """
+        energy = self.projector(inputs)
+        weights = torch.softmax(energy.squeeze(-1), dim=1)
+        outputs = (inputs * weights.unsqueeze(-1)).sum(1)
+        return outputs
 
 
 class GraphConv(nn.Module):

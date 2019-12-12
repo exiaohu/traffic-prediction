@@ -1,10 +1,9 @@
+tensorly
 h5py
 pandas
-dgl
 scipy
 PyYAML
 tqdm
-networkx
 numpy
 tensorboardX
 torch

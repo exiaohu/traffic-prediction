@@ -10,6 +10,7 @@ data:
 train:
   epochs: 100
   max_grad_norm: 5
+  early_stop_steps: 10
 
 optimizer:
   name: Adam
@@ -23,7 +24,7 @@ loss:
 model:
   name: GWNET
   GWNET:
-    adjtype: doubletransition
+    adjtype: null
     randomadj: true
     addaptadj: true
     gcn_bool: true

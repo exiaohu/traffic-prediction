@@ -10,6 +10,7 @@ data:
 train:
   epochs: 100
   max_grad_norm: 5
+  early_stop_steps: 10
 
 optimizer:
   name: Adam
@@ -28,7 +29,7 @@ model:
   FCLSTM:
     n_hist: 12
     n_pred: 12
-    hidden_size: 256
+    hidden_size: 16
     n_rnn_layers: 2
     input_dim: 2
     output_dim: 1

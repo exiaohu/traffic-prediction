@@ -9,7 +9,8 @@ from networks.graph_wavenet import GWNet
 from networks.ours import Ours
 from networks.st_metanet import STMetaNet
 from networks.stgcn import STGCN
-from utils import load_graph_data, sparse_scipy2torch
+from networks.ours_lstm import OursLSTM
+from utils import load_graph_data, sparse_scipy2torch, tucker_for_data
 from utils.stmetanet import get_geo_feature
 
 
@@ -40,14 +41,22 @@ def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[n
         return model, STMETANETTrainer(model, loss, features)
     elif name == 'GWNET':
         adjtype, randomadj = config.pop('adjtype'), config.pop('randomadj')
-        supports = [torch.tensor(graph.todense(), dtype=torch.float32, device=device) for graph in
-                    load_graph_data(dataset, adjtype)]
-        aptinit = None if randomadj else supports[0]
+        if adjtype is not None:
+            supports = [torch.tensor(graph.todense(), dtype=torch.float32, device=device) for graph in
+                        load_graph_data(dataset, adjtype)]
+            aptinit = None if randomadj else supports[0]
+        else:
+            supports = aptinit = None
         model = GWNet(device, supports=supports, aptinit=aptinit, **config)
         return model, GWNetTrainer(model, loss)
     elif name == 'Ours':
-        model = Ours(**config)
+        ranks = [config.pop('time_reduce'), config.pop('node_reduce')]
+        factors = tucker_for_data(dataset, [1, 2], ranks)
+        model = Ours(factors, **config)
         return model, OursTrainer(model, loss)
+    elif name == 'OursLSTM':
+        model = OursLSTM(**config)
+        return model, OursLSTMTrainer(model, loss)
     else:
         raise ValueError(f'{name} is not implemented.')
 
@@ -83,13 +92,20 @@ class FCLSTMTrainer(Trainer):
         return outputs, loss
 
 
-class OursTrainer(Trainer):
+class OursLSTMTrainer(Trainer):
     def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
         if phase == 'train':
-            outputs, supports = self.model(inputs, targets)
+            outputs = self.model(inputs, targets)
         else:
-            outputs, supports = self.model(inputs)
-        loss = self.loss(outputs, targets)  # - 100 * distributions.Categorical(probs=supports).entropy().mean()
+            outputs = self.model(inputs)
+        loss = self.loss(outputs, targets)
+        return outputs, loss
+
+
+class OursTrainer(Trainer):
+    def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
+        outputs = self.model(inputs)
+        loss = self.loss(outputs, targets)
         return outputs, loss
 
 

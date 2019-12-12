@@ -1,5 +1,5 @@
 import os
-from typing import Union, List
+from typing import List, Optional
 
 import numpy as np
 import scipy.sparse as sp
@@ -32,7 +32,7 @@ def reverse_random_walk_matrix(w) -> sp.coo_matrix:
     return random_walk_matrix(w.T)
 
 
-def scaled_laplacian(w: np.ndarray, lambda_max: Union[float, None] = 2., undirected: bool = True) -> sp.coo_matrix:
+def scaled_laplacian(w: np.ndarray, lambda_max: Optional[float] = 2., undirected: bool = True) -> sp.coo_matrix:
     if undirected:
         w = np.maximum.reduce([w, w.T])
     lp = normalized_laplacian(w)

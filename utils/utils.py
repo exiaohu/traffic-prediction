@@ -4,7 +4,7 @@ import os
 import pickle
 import time
 from collections import defaultdict
-from typing import Dict
+from typing import Dict, Optional, List
 
 import numpy as np
 import torch
@@ -26,7 +26,8 @@ def train_model(model: nn.Module,
                 trainer,
                 epochs: int,
                 device,
-                max_grad_norm: float = None):
+                max_grad_norm: Optional[float],
+                early_stop_steps: Optional[int]):
     dataloaders = get_dataloaders(datasets, batch_size)
     # scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
 
@@ -111,7 +112,7 @@ def train_model(model: nn.Module,
                                          best_val_loss=best_val_loss,
                                          optimizer_state_dict=copy.deepcopy(optimizer.state_dict()))
                         print(f'Better model at epoch {epoch} recorded.')
-                    elif epoch - save_dict['epoch'] > 10:
+                    elif early_stop_steps is not None and epoch - save_dict['epoch'] > early_stop_steps:
                         raise ValueError('Early stopped.')
 
             scheduler.step(running_loss['train'])
@@ -123,14 +124,15 @@ def train_model(model: nn.Module,
             writer.add_scalars('Loss', {
                 f'{phase} loss': running_loss[phase] / len(dataloaders[phase].dataset) for phase in phases},
                                global_step=epoch)
-    except (ValueError, KeyboardInterrupt):
-        time_elapsed = time.perf_counter() - since
-        print(f"cost {time_elapsed} seconds")
+    except (ValueError, KeyboardInterrupt) as e:
+        print(e)
+    time_elapsed = time.perf_counter() - since
+    print(f"cost {time_elapsed} seconds")
 
-        model.load_state_dict(save_dict['model_state_dict'])
+    model.load_state_dict(save_dict['model_state_dict'])
 
-        save_model(save_path, **save_dict)
-        print(f'model of epoch {save_dict["epoch"]} successfully saved at `{save_path}`')
+    save_model(save_path, **save_dict)
+    print(f'model of epoch {save_dict["epoch"]} successfully saved at `{save_path}`')
 
     return model
 
@@ -260,3 +262,13 @@ def load_pickle(pickle_file):
         print('Unable to load data ', pickle_file, ':', e)
         raise
     return pickle_data
+
+
+def tucker_for_data(dataset: str, modes: List[int], rank: List[int]) -> List[np.ndarray]:
+    from tensorly.decomposition import partial_tucker
+    data = np.load(f'data/{dataset}/train.npz')['x']
+
+    n_samples, _, n_node, _ = data.shape
+    core, factors = partial_tucker(data, modes=modes, rank=rank)
+    factors = list(map(np.ascontiguousarray, factors))
+    return factors
