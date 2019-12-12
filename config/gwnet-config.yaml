@@ -24,7 +24,7 @@ loss:
 model:
   name: GWNET
   GWNET:
-    adjtype: null
+    adjtype: 'doubletransition'
     randomadj: true
     addaptadj: true
     gcn_bool: true
@@ -32,10 +32,10 @@ model:
     dropout: 0.3
     in_dim: 2
     out_dim: 12
-    residual_channels: 32
-    dilation_channels: 32
-    skip_channels: 256
-    end_channels: 512
+    residual_channels: 16
+    dilation_channels: 16
+    skip_channels: 128
+    end_channels: 256
     kernel_size: 2
     blocks: 4
     layers: 2

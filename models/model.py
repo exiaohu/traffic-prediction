@@ -50,9 +50,9 @@ def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[n
         model = GWNet(device, supports=supports, aptinit=aptinit, **config)
         return model, GWNetTrainer(model, loss)
     elif name == 'Ours':
-        ranks = [config.pop('time_reduce'), config.pop('node_reduce')]
-        factors = tucker_for_data(dataset, [1, 2], ranks)
-        model = Ours(factors, **config)
+        ranks = [config.get('node_dim')]
+        factors = tucker_for_data(dataset, [2], ranks)
+        model = Ours(factors[0], **config)
         return model, OursTrainer(model, loss)
     elif name == 'OursLSTM':
         model = OursLSTM(**config)

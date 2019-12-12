@@ -1,4 +1,5 @@
-from typing import Tuple
+from functools import partial
+from typing import Tuple, List, Optional
 
 import numpy as np
 import torch
@@ -37,10 +38,30 @@ class GraphConv(nn.Module):
     @staticmethod
     def nconv(x: Tensor, adj: Tensor):
         assert len(adj.shape) in [2, 3] and len(x.shape) in [3, 4], f'x of {x.shape} or adj of {adj.shape} is wrong.'
-        x_, r_ = ('btvc', 'btwc') if len(x.shape) == 4 else ('bvc', 'bwc')
+        x_, r_ = ('bfvc', 'bfwc') if len(x.shape) == 4 else ('bvc', 'bwc')
         a_ = 'vw' if len(adj.shape) == 2 else 'bvw'
         x = torch.einsum(f'{x_},{a_}->{r_}', [x, adj])
         return x.contiguous()
+
+
+class StackedGraphConv(nn.ModuleList):
+    def __init__(self, dims: List[int], edge_dim: int, order: int, dropout: float):
+        super(StackedGraphConv, self).__init__()
+        for i, dim in enumerate(dims):
+            if i == 0:
+                continue
+            self.append(GraphConv(dims[i - 1], dim, edge_dim, order, dropout))
+
+    def forward(self, inputs: Tensor, supports: Tensor):
+        """
+        : param inputs: tensor, [B, F, N, T]
+        : param supports: tensor, [n_edge, N, N] or [n_edge, B, N, N]
+        """
+        x = inputs
+        for gc in self:
+            x = gc(x, supports)
+            x = torch.relu(x)
+        return x
 
 
 class STLayer(nn.Module):
@@ -114,7 +135,8 @@ class StackedSTBlocks(nn.ModuleList):
 
 class Ours(nn.Module):
     def __init__(self,
-                 factors: Tuple[np.ndarray, np.ndarray],
+                 factor: np.ndarray,
+                 dynamic_bias: Optional[float],
                  num_node: int,
                  n_in: int,
                  n_out: int,
@@ -132,13 +154,15 @@ class Ours(nn.Module):
                  order: int,
                  dropout: float):
         super(Ours, self).__init__()
-        self.factors = factors
+        self.factor = factor
         self.receptive_field = n_blocks * (kernel_size - 1) * (2 ** n_layers - 1) + 1
 
         self.enter = nn.Conv2d(n_in * 2, n_residuals, kernel_size=(1, 1))
 
         self.blocks = StackedSTBlocks(n_blocks, n_layers, kernel_size, n_residuals, n_dilations,
                                       n_skips, edge_dim, order, dropout)
+
+        self.dynamic_bias = dynamic_bias
 
         self.out = nn.Sequential(
             nn.ReLU(),
@@ -148,38 +172,44 @@ class Ours(nn.Module):
         )
 
         # self.vertexes = nn.Parameter(torch.randn(num_node, node_dim), requires_grad=True)
-        self.arcs = nn.Sequential(
+        self.adaptive_arcs = nn.Sequential(
             nn.Linear(2 * node_dim, 2 * node_dim),
             nn.LeakyReLU(),
             nn.Linear(2 * node_dim, node_dim),
             nn.LeakyReLU(),
-            nn.Linear(node_dim, edge_dim),
+            nn.Linear(node_dim, edge_dim)
         )
 
-        # self.dynamics = nn.Sequential(
-        #     nn.Linear(n_hist * n_in, 4 * node_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(4 * node_dim, 4 * node_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(4 * node_dim, edge_dim),
-        # )
+        if dynamic_bias is not None:
+            self.dynamics_arcs = nn.Sequential(
+                nn.Conv1d(n_hist, 1, kernel_size=(1, 1, 1)),
+                nn.LeakyReLU(),
+                nn.Linear(4 * n_in, 4 * edge_dim),
+                nn.LeakyReLU(),
+                nn.Linear(4 * edge_dim, 2 * edge_dim),
+                nn.LeakyReLU(),
+                nn.Linear(2 * edge_dim, edge_dim)
+            )
 
     def forward(self, inputs: Tensor):
         """
         : params inputs: tensor, [B, T, N, F]
         """
-
-        t_factor = torch.tensor(self.factors[0], device=inputs.device, dtype=torch.float32)
-        s_factor = torch.tensor(self.factors[1], device=inputs.device, dtype=torch.float32)
+        s_factor = torch.tensor(self.factor, device=inputs.device, dtype=torch.float32)
 
         supports = self.adaptive_supports(s_factor)
         # supports = self.adaptive_supports(self.vertexes)
 
-        static_x, dynamic_x = self.inputs_split(inputs, t_factor, s_factor)
+        static_x, dynamic_x = self.inputs_split(inputs, s_factor)
 
         inputs = torch.cat([static_x, dynamic_x], -1)
 
+        if self.dynamic_bias is not None:
+            dynamic_supports = self.compute_dynamic_bias(inputs)
+            supports = supports.unsqueeze(1) + self.dynamic_bias * dynamic_supports
+
         inputs = inputs.transpose(1, 3)  # [B, F, N, T]
+
         in_len = inputs.size(3)
         if in_len < self.receptive_field:
             x = nn.functional.pad(inputs, [self.receptive_field - in_len, 0, 0, 0])
@@ -196,7 +226,7 @@ class Ours(nn.Module):
         num_node, node_dim = vertexes.shape
         src = vertexes.unsqueeze(0).expand([num_node, num_node, node_dim])
         dst = vertexes.unsqueeze(1).expand([num_node, num_node, node_dim])
-        adj_mxs = self.arcs(torch.cat([src, dst], -1)).permute([2, 0, 1])
+        adj_mxs = self.adaptive_arcs(torch.cat([src, dst], -1)).permute([2, 0, 1])
 
         identity = torch.eye(num_node, dtype=torch.float32, device=vertexes.device)
         adj_mxs = F.normalize(F.relu(adj_mxs.contiguous()), p=1, dim=2)
@@ -205,17 +235,27 @@ class Ours(nn.Module):
 
         return adaptive_supports
 
-    def inputs_split(self, inputs: Tensor, t_factor: Tensor, s_factor: Tensor) -> Tuple[Tensor, Tensor]:
-        static_x = torch.einsum('btnf,tw,nu,wp,uq->bpqf', [inputs, t_factor, s_factor, t_factor.t(), s_factor.t()])
+    @staticmethod
+    def inputs_split(inputs: Tensor, s_factor: Tensor) -> Tuple[Tensor, Tensor]:
+        static_x = torch.einsum('btnf,nu,up->btpf', [inputs, s_factor, s_factor.t()])
         return static_x, inputs - static_x
 
-    def dynamic_bias(self, x: Tensor) -> Tensor:
-        pass
+    def compute_dynamic_bias(self, dynamics: Tensor) -> Tensor:
+        b, t, n, f = dynamics.shape
+        src = dynamics.unsqueeze(2).expand([b, t, n, n, -1])
+        dst = dynamics.unsqueeze(3).expand([b, t, n, n, -1])
+        adj_mxs = self.dynamics_arcs(torch.cat([src, dst], -1)).squeeze(1).permute([3, 0, 1, 2])  # [edge_dim, B, N, N]
+
+        identity = torch.eye(n, dtype=torch.float32, device=dynamics.device)
+        adj_mxs = F.normalize(F.relu(adj_mxs.contiguous()), p=1, dim=3)
+        dynamic_supports = torch.max(adj_mxs, identity) - identity
+
+        return dynamic_supports
 
 
 def test():
-    factors = (np.random.randn(12, 3), np.random.randn(207, 50))
-    m = Ours(factors, 207, 2, 1, 12, 12, 8, 2, 32, 32, 256, 512, 2, 4, 2, 2, 0.3)
+    factor = np.random.randn(207, 50)
+    m = Ours(factor, 0.1, 207, 2, 1, 12, 12, 8, 2, 32, 32, 256, 512, 2, 4, 2, 2, 0.3)
     x, y = torch.randn(64, 12, 207, 2), torch.randn(64, 12, 207, 1)
     y_ = m(x)
     print(y_.shape)

@@ -1,6 +1,6 @@
 name: Ours
 
-device: 2
+device: 1
 data:
   dataset: METR-LA
   batch-size: 64
@@ -27,14 +27,13 @@ loss:
 model:
   name: Ours
   Ours:
-    time_reduce: 3
-    node_reduce: 10
+    dynamic_bias: null
     num_node: 207
     n_in: 2
     n_out: 1
     n_hist: 12
     n_pred: 12
-    node_dim: 10
+    node_dim: 100
     edge_dim: 4
     n_residuals: 16
     n_dilations: 16
