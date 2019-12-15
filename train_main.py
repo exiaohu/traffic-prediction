@@ -71,14 +71,16 @@ if __name__ == '__main__':
     parser.add_argument('--config', required=True, type=str,
                         help='Configuration filename for restoring the model.')
     parser.add_argument('--resume', required=False, type=bool, default=False,
-                        help='Resume.')
+                        help='if to resume a trained model?')
     parser.add_argument('--test', required=False, type=bool, default=False,
-                        help='Test.')
+                        help='if in the test mode?')
+    parser.add_argument('--name', required=True, type=str, help='Name.')
 
     args = parser.parse_args()
 
     with open(os.path.join('config', f'{args.config}.yaml')) as f:
         config = yaml.safe_load(f)
+        config['name'] = args.name
     if args.resume:
         print(f'Resume to {config["name"]}.')
         train(config, resume=True)
