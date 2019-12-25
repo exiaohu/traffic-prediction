@@ -1,3 +1,4 @@
+dgl
 tensorly
 h5py
 pandas

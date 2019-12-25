@@ -1,16 +1,17 @@
 from typing import Tuple, List
 
+import numpy as np
 import torch
 from torch import nn, Tensor
 
 from networks.dcrnn import DCRNN
 from networks.fc_lstm import FCLSTM
 from networks.graph_wavenet import GWNet
-from networks.ours import Ours
+from networks.ours2 import Ours
 from networks.st_metanet import STMetaNet
 from networks.stgcn import STGCN
 from networks.ours_lstm import OursLSTM
-from utils import load_graph_data, sparse_scipy2torch, tucker_for_data
+from utils import load_graph_data, sparse_scipy2torch, node_embedding
 from utils.stmetanet import get_geo_feature
 
 
@@ -50,9 +51,10 @@ def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[n
         model = GWNet(device, supports=supports, aptinit=aptinit, **config)
         return model, GWNetTrainer(model, loss)
     elif name == 'Ours':
-        ranks = [config.get('node_dim')]
-        factors = tucker_for_data(dataset, [2], ranks)
-        model = Ours(factors[0], **config)
+        factors = node_embedding(dataset, 100, device=device)
+        model = Ours(factors, **config)
+        # graphs = np.stack([np.array(g.todense()) for g in load_graph_data(dataset, 'doubletransition')])
+        # model = Ours(torch.tensor(graphs, device=device, dtype=torch.float32), **config)
         return model, OursTrainer(model, loss)
     elif name == 'OursLSTM':
         model = OursLSTM(**config)
@@ -106,7 +108,13 @@ class OursTrainer(Trainer):
     def train(self, inputs: Tensor, targets: Tensor, phase: str) -> Tuple[Tensor, Tensor]:
         outputs = self.model(inputs)
         loss = self.loss(outputs, targets)
-        return outputs, loss
+        # entropy = 1e-6 * self.entropy(supports)
+        return outputs, loss  # + entropy
+
+    @staticmethod
+    def entropy(x: Tensor, eps: float = 1e-8):
+        x = x + eps
+        return -torch.sum(torch.log(x) * x)
 
 
 class STMETANETTrainer(Trainer):

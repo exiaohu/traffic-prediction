@@ -4,12 +4,12 @@ import os
 import pickle
 import time
 from collections import defaultdict
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
-from torch import nn, optim
+from torch import nn, optim, Tensor
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -53,6 +53,7 @@ def train_model(model: nn.Module,
     since = time.perf_counter()
 
     model = model.to(device)
+    set_device_recursive(optimizer.state, device)
 
     print(model)
     print(f'Trainable parameters: {get_number_of_parameters(model)}.')
@@ -121,9 +122,8 @@ def train_model(model: nn.Module,
                 for phase in phases:
                     for key, val in running_metrics[phase][metric].items():
                         writer.add_scalars(f'{metric}/{key}', {f'{phase}': val}, global_step=epoch)
-            writer.add_scalars('Loss', {
-                f'{phase} loss': running_loss[phase] / len(dataloaders[phase].dataset) for phase in phases},
-                               global_step=epoch)
+            loss_dict = {f'{phase} loss': running_loss[phase] / len(dataloaders[phase].dataset) for phase in phases}
+            writer.add_scalars('Loss', loss_dict, global_step=epoch)
     except (ValueError, KeyboardInterrupt) as e:
         print(e)
     time_elapsed = time.perf_counter() - since
@@ -264,11 +264,28 @@ def load_pickle(pickle_file):
     return pickle_data
 
 
-def tucker_for_data(dataset: str, modes: List[int], rank: List[int]) -> List[np.ndarray]:
-    from tensorly.decomposition import partial_tucker
-    data = np.load(f'data/{dataset}/train.npz')['x']
+def node_embedding(dataset: str, embedding_dim: int, device='cpu') -> Tensor:
+    data: np.ndarray = np.load(f'data/{dataset}/train.npz')['x']
+    data = data[..., 0]
 
-    n_samples, _, n_node, _ = data.shape
-    core, factors = partial_tucker(data, modes=modes, rank=rank)
-    factors = list(map(np.ascontiguousarray, factors))
-    return factors
+    data: Tensor = torch.tensor(data, device=device, dtype=torch.float32)
+
+    import tensorly
+    from tensorly.decomposition import partial_tucker
+    tensorly.set_backend('pytorch')
+
+    core, factors = partial_tucker(data, modes=[2], ranks=[embedding_dim])
+
+    return factors[0]
+
+
+def set_device_recursive(var, device):
+    for key in var:
+        if isinstance(var[key], dict):
+            var[key] = set_device_recursive(var[key], device)
+        else:
+            try:
+                var[key] = var[key].to(device)
+            except AttributeError:
+                pass
+    return var
