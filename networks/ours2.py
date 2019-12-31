@@ -1,6 +1,7 @@
 import math
-from typing import Tuple, List, Callable
+from typing import List, Callable
 
+import scipy.sparse as sp
 import torch
 from torch import nn, Tensor
 from torch.nn import init
@@ -23,7 +24,7 @@ class GraphConv(nn.Module):
         :param supports: tensor, [n_edge, N, N] or [n_edge, B, N, N]
         :return: tensor, [B, c_out, N, T] or [B, c_out, N]
         """
-        h = [x] + [self.nconv(x, support) for support in supports]
+        h = [x] + [self.nconv(x, a) for a in supports]
         h = torch.cat(h, 1)
         return self.out(h)
 
@@ -54,7 +55,7 @@ class StackedGraphConv(nn.ModuleList):
         for cin, cout in zip(dims[:-1], dims[1:]):
             self.append(GraphConv(cin, cout, edge_dim))
 
-    def forward(self, x: Tensor, supports: Tensor):
+    def forward(self, x: Tensor, supports):
         h = x
         for graph_conv in self:
             h = graph_conv(self.activation(h), supports)
@@ -62,16 +63,25 @@ class StackedGraphConv(nn.ModuleList):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, n_hidden: int, dims: List[int]):
+    def __init__(self, n_hidden: int, dim: int, in_len: int = 5):
         super(SelfAttention, self).__init__()
-        self.dims = dims
-        self.projector = nn.Sequential(
-            nn.Conv3d(n_hidden, 64, kernel_size=(1, 1, 1)),
-            nn.ReLU(True),
-            nn.Conv3d(64, 64, kernel_size=(1, 1, 1)),
-            nn.ReLU(True),
-            nn.Conv3d(64, 1, kernel_size=(1, 1, 1)),
-        )
+        self.dim = dim
+        if in_len == 5:
+            self.projector = nn.Sequential(
+                nn.Conv3d(n_hidden, 64, kernel_size=(1, 1, 1)),
+                nn.ReLU(True),
+                nn.Conv3d(64, 64, kernel_size=(1, 1, 1)),
+                nn.ReLU(True),
+                nn.Conv3d(64, 1, kernel_size=(1, 1, 1)),
+            )
+        elif in_len == 4:
+            self.projector = nn.Sequential(
+                nn.Conv2d(n_hidden, 64, kernel_size=(1, 1)),
+                nn.ReLU(True),
+                nn.Conv2d(64, 64, kernel_size=(1, 1)),
+                nn.ReLU(True),
+                nn.Conv2d(64, 1, kernel_size=(1, 1)),
+            )
 
     def forward(self, inputs: Tensor):
         """
@@ -81,53 +91,80 @@ class SelfAttention(nn.Module):
         energy = self.projector(inputs)
 
         weights = energy
-        for dim in self.dims:
-            weights = torch.softmax(weights, dim=dim)
-        outputs = (inputs * weights).sum(self.dims)
+        weights = torch.softmax(weights, dim=self.dim)
+        outputs = (inputs * weights).sum(self.dim)
         return outputs
 
 
-class SupportsGenerator(nn.Module):
-    def __init__(self, factor: Tensor, edge_dim: int):
-        super(SupportsGenerator, self).__init__()
-        self.factor = factor
+class STAdaptor(nn.Module):
+    def __init__(self, in_dim: int, edge_dim: int, node_dim: int, nodes_num: int, dynamic: bool):
+        super(STAdaptor, self).__init__()
+        self.edge_dim = edge_dim
 
-        self.cov = nn.Parameter(torch.empty(edge_dim, factor.shape[-1], 16))
+        self.node_embedding = nn.Parameter(torch.empty(nodes_num, node_dim))
+        init.xavier_normal_(self.node_embedding, math.sqrt(2))
 
-        init.constant_(self.cov, 1.0)
+        self.adaptor_w = nn.Sequential(
+            nn.Linear(node_dim, 64),
+            nn.ReLU(True),
+            nn.Linear(64, 64),
+            nn.ReLU(True),
+            nn.Linear(64, edge_dim)
+        )
 
-    def forward(self, x: Tensor) -> Tensor:
-        b, _, n, _ = x.shape
-        ne = self.factor.unsqueeze(0)
+        if dynamic:
+            self.dynamic_convert = nn.Sequential(
+                nn.ReLU(True),
+                nn.Conv2d(in_dim, 64, kernel_size=(1, 1)),
+                nn.ReLU(True),
+                nn.Conv2d(64, 64, kernel_size=(1, 1)),
+                nn.ReLU(True),
+                nn.Conv2d(64, node_dim, kernel_size=(1, 1)),
+                nn.ReLU(True),
+                SelfAttention(node_dim, dim=3, in_len=4)
+            )
 
-        dist = self.get_distances(ne)
-        adj = torch.exp(-((dist / dist.std(dim=[-1, -2], keepdim=True)) ** 2))
-        mask = 1.  # (adj > 0.8).to(torch.float32)
-        return self.normalize(mask * adj).squeeze(1)
+    def forward(self, supports: Tensor, inputs: Tensor) -> Tensor:
+        """
+        :param supports: tensor, [E, N, N]
+        :param inputs: tensor, [B, C, N, T]
+        :return: tensor, [E, N, N]
+        """
+        supports = supports.permute(1, 2, 0)  # [N, N, E]
+
+        ne = self.node_embedding
+
+        if hasattr(self, 'dynamic_convert'):
+            dynamic_component = self.dynamic_convert(inputs)
+            dynamic_component = torch.transpose(dynamic_component, 1, 2)
+            ne = ne + dynamic_component
+
+        ne = ne.unsqueeze(-3) + ne.unsqueeze(-2)
+        adaptive = self.adaptor_w(ne)
+
+        adaptive = (adaptive - torch.mean(adaptive)) / torch.std(adaptive)
+        adaptive = (adaptive + 1) * supports
+        adaptive = adaptive.unsqueeze(0).transpose(0, -1).squeeze(-1)
+        adaptive = torch.relu(adaptive)
+
+        return self.normalize(adaptive)
 
     @staticmethod
-    def normalize(adj: Tensor):
-        d_inv = adj.sum(-1).pow(-0.5)
-        d_inv_left, d_inv_right = d_inv.unsqueeze(-1), d_inv.unsqueeze(-2)
-        return d_inv_left * adj * d_inv_right
-
-    def get_distances(self, ne: Tensor):
+    def normalize(adjs: Tensor):
         """
-        :param ne: tensor, [B, N, E]
-        :return: tensor, [B, N, N]
+        :param adjs: tensor, [E, N, N] or [E, B, N, N]
+        :return: tensor, [E, N, N] or [E, B, N, N]
         """
-        diffs = ne.unsqueeze(1) - ne.unsqueeze(2)
-        embedded = torch.einsum('bnvd,edy->ebnvy', [diffs, self.cov])
-        return (embedded.pow(2).sum(-1) + 1e-8).sqrt()
+        d_inv_sqrt = adjs.sum(-1).pow(-0.5)
+        d_inv_sqrt[torch.isinf(d_inv_sqrt)] = 0.
+        d_inv_sqrt_left, d_inv_sqrt_right = d_inv_sqrt.unsqueeze(-1), d_inv_sqrt.unsqueeze(-2)
+        return d_inv_sqrt_left * adjs * d_inv_sqrt_right
 
 
 class STLayer(nn.ModuleList):
-    def __init__(self, factor: Tensor, n_hidden: int, edge_dim: int, dropout: float):
+    def __init__(self, n_hidden: int, edge_dim: int, dropout: float):
         super(STLayer, self).__init__()
-        self.factor = factor
         self.edge_dim = edge_dim
-
-        # self.supports = SupportsGenerator(factor, edge_dim, t_len, in_dim)
 
         self.bn = nn.BatchNorm2d(n_hidden)
 
@@ -147,39 +184,44 @@ class STLayer(nn.ModuleList):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: Tensor, supports: Tensor):
+    def forward(self, x: Tensor, supports):
         # supports = self.supports(x)
-        residual = self.residual(x)
+        # residual = self.residual(x)
         x = torch.relu(self.bn(x))
+
+        residual = self.residual(x)
 
         affine = self.affine_conv(x)
         gate = self.gate_conv(x)
-        x = torch.tanh(affine) * torch.sigmoid(gate)
+        x = torch.tanh(affine + residual) * torch.sigmoid(gate)
         x = self.spatial_conv(x, supports)
 
-        return self.dropout(x + residual)
+        return self.dropout(x)
 
 
 class DenseBlock(nn.Module):
-    def __init__(self, factor: Tensor, n_layers: int, n_hid, e_dim: int, dropout: float):
+    def __init__(self, n_layers: int, n_hid, e_dim: int, dropout: float):
         super(DenseBlock, self).__init__()
         self.n_hiddens = n_hid
 
-        self.layers = nn.ModuleList([STLayer(factor, n_hid, e_dim, dropout) for _ in range(n_layers)])
-        self.out = SelfAttention(n_hid, dims=[2])
+        self.layers = nn.ModuleList([STLayer(n_hid, e_dim, dropout) for _ in range(n_layers)])
+        self.out = SelfAttention(n_hid, dim=2)
+        # self.out = nn.Conv2d(n_hid * (n_layers + 1), n_hid, kernel_size=(1, 1))
 
-    def forward(self, x: Tensor, supports: Tensor) -> Tensor:
+    def forward(self, x: Tensor, supports) -> Tensor:
+        b, _, n, t = x.shape
         h = x
         x = x.unsqueeze(2)
         for layer in self.layers:
             h = layer(h, supports)
             x = torch.cat([x, h.unsqueeze(2)], 2)
-        return self.out(x)
+        # x = x.reshape(b, -1, n, t)
+        return self.out(torch.relu(x))
 
 
 class Ours(nn.Module):
     def __init__(self,
-                 factor: Tensor,
+                 factor,
                  n_in: int,
                  n_out: int,
                  n_hidden: int,
@@ -187,55 +229,57 @@ class Ours(nn.Module):
                  n_blocks: int,
                  n_layers: int,
                  edge_dim: int,
-                 dropout: float):
+                 node_dim: int,
+                 nodes_num: int,
+                 dropout: float,
+                 dynamic: bool):
         super(Ours, self).__init__()
-        self.factor = factor
         self.t_pred = t_pred
+        # n_in = n_in + 2
 
-        # n_in = n_in * 3
-        self.supports = SupportsGenerator(factor, edge_dim)
+        self.support_adaptor = STAdaptor(n_hidden, edge_dim, node_dim, nodes_num, dynamic)
+        self.raw_supports = factor
 
         self.enter = nn.Conv2d(n_in, n_hidden, kernel_size=(1, 1))
 
         self.blocks = nn.ModuleList(
-            [DenseBlock(factor, n_layers, n_hidden, edge_dim, dropout) for _ in range(n_blocks)]
+            [DenseBlock(n_layers, n_hidden, edge_dim, dropout) for _ in range(n_blocks)]
         )
 
-        self.multi_level_temporal_reduce = SelfAttention(n_hidden, dims=[2, 4])
+        self.temporal_reduce = SelfAttention(n_hidden, dim=4)
 
-        self.out = StackedGraphConv([n_hidden, 128, 256, t_pred * n_out], torch.relu, edge_dim)
+        self.out = StackedGraphConv([n_hidden * (n_blocks + 1), 128, 256, t_pred * n_out], torch.relu, edge_dim)
 
     def forward(self, inputs: Tensor):
         """
         : params inputs: tensor, [B, T, N, F]
         """
-        # x_1, x_2 = self.inputs_split(inputs)
-        # inputs = torch.cat([inputs, x_1, x_2], -1)
-        supports = self.supports(inputs)
-
         inputs = inputs.transpose(1, 3)  # [B, F, N, T]
 
         x = self.enter(inputs)
 
+        # supports = self.raw_supports
+        supports = self.support_adaptor(self.raw_supports, x)
+
         b, c, n, t = x.shape
+
         h = x
         x = x.unsqueeze(2)
         for block in self.blocks:
             h = block(h, supports)
             x = torch.cat([x, h.unsqueeze(2)], 2)
-        h = self.multi_level_temporal_reduce(x)
+        h = self.temporal_reduce(torch.relu(x))
+        h = torch.reshape(h, (b, -1, n))
         y_ = self.out(h, supports)
 
         return y_.reshape(b, self.t_pred, -1, n).transpose(-1, -2)
 
-    def inputs_split(self, inputs: Tensor) -> Tuple[Tensor, Tensor]:
-        static_x = torch.einsum('btnf,nu,up->btpf', [inputs, self.factor, self.factor.t()])
-        return static_x, inputs - static_x
 
-
-def test():
+def test_ours():
     from utils.utils import get_number_of_parameters
-    factor = torch.randn(207, 100)
+    from utils import load_graph_data
+    supports = load_graph_data('METR-LA', 'doubletransition')
+    supports = torch.tensor(list(map(sp.coo_matrix.toarray, supports)), dtype=torch.float32)
     config = {
         'n_in': 2,
         'n_out': 1,
@@ -244,12 +288,23 @@ def test():
         'n_blocks': 4,
         'n_layers': 3,
         'edge_dim': 2,
-        'dropout': 0.3
+        'node_dim': 8,
+        'nodes_num': 207,
+        'dropout': 0.3,
+        'dynamic': False
     }
     batch_size = 64
-    m = Ours(factor, **config)
+    m = Ours(supports, **config)
     print(m)
     print(get_number_of_parameters(m))
-    x = torch.randn(batch_size, 12, 207, config['n_in'])
+    x = torch.randn(batch_size, 12, config['nodes_num'], config['n_in'])
     y = m(x)
+    print(y.shape)
+
+
+def test_g_conv():
+    m = GraphConv(32, 32, 4)
+    x = torch.randn(64, 32, 207, 12)
+    s = torch.randn(4, 207, 207)
+    y = m(x, s)
     print(y.shape)

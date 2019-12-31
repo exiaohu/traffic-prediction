@@ -34,7 +34,10 @@ def train(_config, resume: bool = False, test: bool = False):
 
     optimizer = get_optimizer(optimizer_name, model.parameters(), **_config['optimizer'][optimizer_name])
 
-    scheduler = get_scheduler(scheduler_name, optimizer, **_config['scheduler'][scheduler_name])
+    if scheduler_name is not None:
+        scheduler = get_scheduler(scheduler_name, optimizer, **_config['scheduler'][scheduler_name])
+    else:
+        scheduler = None
 
     save_folder = os.path.join('saves', dataset, _config['name'])
 

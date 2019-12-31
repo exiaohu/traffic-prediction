@@ -4,9 +4,11 @@ import os
 import pickle
 import time
 from collections import defaultdict
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
+import dgl
 import numpy as np
+import scipy.sparse as sp
 import torch
 from tensorboardX import SummaryWriter
 from torch import nn, optim, Tensor
@@ -115,8 +117,8 @@ def train_model(model: nn.Module,
                         print(f'Better model at epoch {epoch} recorded.')
                     elif early_stop_steps is not None and epoch - save_dict['epoch'] > early_stop_steps:
                         raise ValueError('Early stopped.')
-
-            scheduler.step(running_loss['train'])
+            if scheduler is not None:
+                scheduler.step(running_loss['train'])
 
             for metric in running_metrics['train'].keys():
                 for phase in phases:
@@ -289,3 +291,18 @@ def set_device_recursive(var, device):
             except AttributeError:
                 pass
     return var
+
+
+def get_graph_from_sparse_matrices(nodes_num: int, matrices: List[sp.coo_matrix], device='cpu') -> dgl.DGLGraph:
+    g = dgl.DGLGraph()
+    g.add_nodes(nodes_num)
+
+    for i, a in enumerate(matrices):
+        rows = torch.tensor(a.row, dtype=torch.int64, device=device)
+        cols = torch.tensor(a.col, dtype=torch.int64, device=device)
+        vals = torch.tensor(a.data, dtype=torch.float32, device=device)
+        g.add_edges(rows, cols, {f'feat-{i}': vals})
+    g.edata['feats'] = torch.stack(list(g.edata.values()), -1)
+    for i in range(len(matrices)):
+        g.edata.pop(f'feat-{i}')
+    return g

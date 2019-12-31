@@ -1,17 +1,16 @@
 from typing import Tuple, List
 
-import numpy as np
+import scipy.sparse as sp
 import torch
 from torch import nn, Tensor
 
 from networks.dcrnn import DCRNN
 from networks.fc_lstm import FCLSTM
 from networks.graph_wavenet import GWNet
-from networks.ours2 import Ours
+from networks.ours_lstm import OursLSTM
 from networks.st_metanet import STMetaNet
 from networks.stgcn import STGCN
-from networks.ours_lstm import OursLSTM
-from utils import load_graph_data, sparse_scipy2torch, node_embedding
+from utils import load_graph_data, sparse_scipy2torch
 from utils.stmetanet import get_geo_feature
 
 
@@ -50,10 +49,22 @@ def create_model(name: str, dataset: str, loss, config: dict, device) -> Tuple[n
             supports = aptinit = None
         model = GWNet(device, supports=supports, aptinit=aptinit, **config)
         return model, GWNetTrainer(model, loss)
-    elif name == 'Ours':
-        factors = node_embedding(dataset, 100, device=device)
-        model = Ours(factors, **config)
-        # graphs = np.stack([np.array(g.todense()) for g in load_graph_data(dataset, 'doubletransition')])
+    elif name.startswith('Ours'):
+        # factors = node_embedding(dataset, 100, device=device)
+        if name == 'Ours1':
+            from networks.ours import Ours
+        elif name == 'Ours2':
+            from networks.ours2 import Ours
+        else:
+            raise ValueError(f'{name} is wrong.')
+
+        factor = load_graph_data(dataset, 'doubletransition')
+        # nodes_num = supports[0].shape[0]
+        # supports = get_graph_from_sparse_matrices(nodes_num, supports, device=device)
+
+        factor = torch.tensor(list(map(sp.coo_matrix.toarray, factor)), dtype=torch.float32, device=device)
+
+        model = Ours(factor, **config)
         # model = Ours(torch.tensor(graphs, device=device, dtype=torch.float32), **config)
         return model, OursTrainer(model, loss)
     elif name == 'OursLSTM':
