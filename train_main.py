@@ -26,13 +26,17 @@ def train(_config, resume: bool = False, test: bool = False):
 
     loss.to(device)
 
-    model, trainer = create_model(model_name,
-                                  dataset,
-                                  loss,
-                                  _config['model'][model_name],
-                                  device)
+    adaptor, model, trainer = create_model(dataset,
+                                           loss,
+                                           _config['model'][model_name],
+                                           _config['trainer'],
+                                           device)
 
-    optimizer = get_optimizer(optimizer_name, model.parameters(), **_config['optimizer'][optimizer_name])
+    params = [
+        {'params': adaptor.parameters(), 'lr': 1e-3, },
+        {'params': model.parameters()}
+    ]
+    optimizer = get_optimizer(optimizer_name, params, **_config['optimizer'][optimizer_name])
 
     if scheduler_name is not None:
         scheduler = get_scheduler(scheduler_name, optimizer, **_config['scheduler'][scheduler_name])
@@ -51,22 +55,26 @@ def train(_config, resume: bool = False, test: bool = False):
     datasets = get_datasets(dataset, _config['data']['input_dim'], _config['data']['output_dim'])
 
     if not test:
-        train_model(model=model,
-                    datasets=datasets,
-                    batch_size=_config['data']['batch-size'],
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    folder=save_folder,
-                    trainer=trainer,
-                    device=device,
-                    **_config['train'])
+        adaptor, model = train_model(
+            adaptor=adaptor,
+            model=model,
+            datasets=datasets,
+            batch_size=_config['data']['batch-size'],
+            optimizer=optimizer,
+            scheduler=scheduler,
+            folder=save_folder,
+            trainer=trainer,
+            device=device,
+            **_config['train'])
 
-    test_model(model=model,
-               datasets=datasets,
-               batch_size=_config['data']['batch-size'],
-               trainer=trainer,
-               folder=save_folder,
-               device=device)
+    test_model(
+        adaptor=adaptor,
+        model=model,
+        datasets=datasets,
+        batch_size=_config['data']['batch-size'],
+        trainer=trainer,
+        folder=save_folder,
+        device=device)
 
 
 if __name__ == '__main__':

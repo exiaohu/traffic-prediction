@@ -1,7 +1,6 @@
 import math
 from typing import List, Callable
 
-import scipy.sparse as sp
 import torch
 from torch import nn, Tensor
 from torch.nn import init
@@ -52,8 +51,8 @@ class StackedGraphConv(nn.ModuleList):
     def __init__(self, dims: List[int], activation: Callable, edge_dim: int):
         super(StackedGraphConv, self).__init__()
         self.activation = activation
-        for cin, cout in zip(dims[:-1], dims[1:]):
-            self.append(GraphConv(cin, cout, edge_dim))
+        for c_in, c_out in zip(dims[:-1], dims[1:]):
+            self.append(GraphConv(c_in, c_out, edge_dim))
 
     def forward(self, x: Tensor, supports):
         h = x
@@ -63,25 +62,16 @@ class StackedGraphConv(nn.ModuleList):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, n_hidden: int, dim: int, in_len: int = 5):
+    def __init__(self, n_hidden: int, dim: int):
         super(SelfAttention, self).__init__()
         self.dim = dim
-        if in_len == 5:
-            self.projector = nn.Sequential(
-                nn.Conv3d(n_hidden, 64, kernel_size=(1, 1, 1)),
-                nn.ReLU(True),
-                nn.Conv3d(64, 64, kernel_size=(1, 1, 1)),
-                nn.ReLU(True),
-                nn.Conv3d(64, 1, kernel_size=(1, 1, 1)),
-            )
-        elif in_len == 4:
-            self.projector = nn.Sequential(
-                nn.Conv2d(n_hidden, 64, kernel_size=(1, 1)),
-                nn.ReLU(True),
-                nn.Conv2d(64, 64, kernel_size=(1, 1)),
-                nn.ReLU(True),
-                nn.Conv2d(64, 1, kernel_size=(1, 1)),
-            )
+        self.projector = nn.Sequential(
+            nn.Conv3d(n_hidden, 64, kernel_size=(1, 1, 1)),
+            nn.ReLU(True),
+            nn.Conv3d(64, 64, kernel_size=(1, 1, 1)),
+            nn.ReLU(True),
+            nn.Conv3d(64, 1, kernel_size=(1, 1, 1)),
+        )
 
     def forward(self, inputs: Tensor):
         """
@@ -96,71 +86,6 @@ class SelfAttention(nn.Module):
         return outputs
 
 
-class STAdaptor(nn.Module):
-    def __init__(self, in_dim: int, edge_dim: int, node_dim: int, nodes_num: int, dynamic: bool):
-        super(STAdaptor, self).__init__()
-        self.edge_dim = edge_dim
-
-        self.node_embedding = nn.Parameter(torch.empty(nodes_num, node_dim))
-        init.xavier_normal_(self.node_embedding, math.sqrt(2))
-
-        self.adaptor_w = nn.Sequential(
-            nn.Linear(node_dim, 64),
-            nn.ReLU(True),
-            nn.Linear(64, 64),
-            nn.ReLU(True),
-            nn.Linear(64, edge_dim)
-        )
-
-        if dynamic:
-            self.dynamic_convert = nn.Sequential(
-                nn.ReLU(True),
-                nn.Conv2d(in_dim, 64, kernel_size=(1, 1)),
-                nn.ReLU(True),
-                nn.Conv2d(64, 64, kernel_size=(1, 1)),
-                nn.ReLU(True),
-                nn.Conv2d(64, node_dim, kernel_size=(1, 1)),
-                nn.ReLU(True),
-                SelfAttention(node_dim, dim=3, in_len=4)
-            )
-
-    def forward(self, supports: Tensor, inputs: Tensor) -> Tensor:
-        """
-        :param supports: tensor, [E, N, N]
-        :param inputs: tensor, [B, C, N, T]
-        :return: tensor, [E, N, N]
-        """
-        supports = supports.permute(1, 2, 0)  # [N, N, E]
-
-        ne = self.node_embedding
-
-        if hasattr(self, 'dynamic_convert'):
-            dynamic_component = self.dynamic_convert(inputs)
-            dynamic_component = torch.transpose(dynamic_component, 1, 2)
-            ne = ne + dynamic_component
-
-        ne = ne.unsqueeze(-3) + ne.unsqueeze(-2)
-        adaptive = self.adaptor_w(ne)
-
-        adaptive = (adaptive - torch.mean(adaptive)) / torch.std(adaptive)
-        adaptive = (adaptive + 1) * supports
-        adaptive = adaptive.unsqueeze(0).transpose(0, -1).squeeze(-1)
-        adaptive = torch.relu(adaptive)
-
-        return self.normalize(adaptive)
-
-    @staticmethod
-    def normalize(adjs: Tensor):
-        """
-        :param adjs: tensor, [E, N, N] or [E, B, N, N]
-        :return: tensor, [E, N, N] or [E, B, N, N]
-        """
-        d_inv_sqrt = adjs.sum(-1).pow(-0.5)
-        d_inv_sqrt[torch.isinf(d_inv_sqrt)] = 0.
-        d_inv_sqrt_left, d_inv_sqrt_right = d_inv_sqrt.unsqueeze(-1), d_inv_sqrt.unsqueeze(-2)
-        return d_inv_sqrt_left * adjs * d_inv_sqrt_right
-
-
 class STLayer(nn.ModuleList):
     def __init__(self, n_hidden: int, edge_dim: int, dropout: float):
         super(STLayer, self).__init__()
@@ -169,7 +94,6 @@ class STLayer(nn.ModuleList):
         self.bn = nn.BatchNorm2d(n_hidden)
 
         self.residual = nn.Conv2d(n_hidden, n_hidden, kernel_size=(1, 1))
-
         self.affine_conv = nn.Sequential(
             nn.ZeroPad2d((1, 0, 0, 0)),
             nn.Conv2d(n_hidden, n_hidden, kernel_size=(1, 2))
@@ -185,11 +109,9 @@ class STLayer(nn.ModuleList):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: Tensor, supports):
-        # supports = self.supports(x)
-        # residual = self.residual(x)
-        x = torch.relu(self.bn(x))
-
+        # residual = x
         residual = self.residual(x)
+        x = torch.relu(self.bn(x))
 
         affine = self.affine_conv(x)
         gate = self.gate_conv(x)
@@ -221,7 +143,6 @@ class DenseBlock(nn.Module):
 
 class Ours(nn.Module):
     def __init__(self,
-                 factor,
                  n_in: int,
                  n_out: int,
                  n_hidden: int,
@@ -229,16 +150,9 @@ class Ours(nn.Module):
                  n_blocks: int,
                  n_layers: int,
                  edge_dim: int,
-                 node_dim: int,
-                 nodes_num: int,
-                 dropout: float,
-                 dynamic: bool):
+                 dropout: float):
         super(Ours, self).__init__()
         self.t_pred = t_pred
-        # n_in = n_in + 2
-
-        self.support_adaptor = STAdaptor(n_hidden, edge_dim, node_dim, nodes_num, dynamic)
-        self.raw_supports = factor
 
         self.enter = nn.Conv2d(n_in, n_hidden, kernel_size=(1, 1))
 
@@ -247,19 +161,17 @@ class Ours(nn.Module):
         )
 
         self.temporal_reduce = SelfAttention(n_hidden, dim=4)
-
         self.out = StackedGraphConv([n_hidden * (n_blocks + 1), 128, 256, t_pred * n_out], torch.relu, edge_dim)
 
-    def forward(self, inputs: Tensor):
+    def forward(self, inputs: Tensor, supports: Tensor):
         """
-        : params inputs: tensor, [B, T, N, F]
+        :param inputs: tensor, [B, T, N, F]
+        :param supports: tensor, [E, B, N, N] or [E, N, N]
+        :return
         """
         inputs = inputs.transpose(1, 3)  # [B, F, N, T]
 
         x = self.enter(inputs)
-
-        # supports = self.raw_supports
-        supports = self.support_adaptor(self.raw_supports, x)
 
         b, c, n, t = x.shape
 
@@ -270,6 +182,7 @@ class Ours(nn.Module):
             x = torch.cat([x, h.unsqueeze(2)], 2)
         h = self.temporal_reduce(torch.relu(x))
         h = torch.reshape(h, (b, -1, n))
+        # y_ = self.out(h)
         y_ = self.out(h, supports)
 
         return y_.reshape(b, self.t_pred, -1, n).transpose(-1, -2)
@@ -278,6 +191,7 @@ class Ours(nn.Module):
 def test_ours():
     from utils.utils import get_number_of_parameters
     from utils import load_graph_data
+    import scipy.sparse as sp
     supports = load_graph_data('METR-LA', 'doubletransition')
     supports = torch.tensor(list(map(sp.coo_matrix.toarray, supports)), dtype=torch.float32)
     config = {
@@ -288,17 +202,14 @@ def test_ours():
         'n_blocks': 4,
         'n_layers': 3,
         'edge_dim': 2,
-        'node_dim': 8,
-        'nodes_num': 207,
         'dropout': 0.3,
-        'dynamic': False
     }
     batch_size = 64
-    m = Ours(supports, **config)
+    m = Ours(**config)
     print(m)
     print(get_number_of_parameters(m))
-    x = torch.randn(batch_size, 12, config['nodes_num'], config['n_in'])
-    y = m(x)
+    x = torch.randn(batch_size, 12, 207, config['n_in'])
+    y = m(x, supports)
     print(y.shape)
 
 

@@ -6,12 +6,10 @@ import time
 from collections import defaultdict
 from typing import Dict, Optional, List
 
-import dgl
 import numpy as np
-import scipy.sparse as sp
 import torch
 from tensorboardX import SummaryWriter
-from torch import nn, optim, Tensor
+from torch import nn, optim
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -19,17 +17,19 @@ from .data import get_dataloaders
 from .evaluate import evaluate
 
 
-def train_model(model: nn.Module,
-                datasets: Dict[str, Dataset],
-                batch_size: int,
-                optimizer,
-                scheduler,
-                folder: str,
-                trainer,
-                epochs: int,
-                device,
-                max_grad_norm: Optional[float],
-                early_stop_steps: Optional[int]):
+def train_model(
+        adaptor: nn.Module,
+        model: nn.Module,
+        datasets: Dict[str, Dataset],
+        batch_size: int,
+        optimizer,
+        scheduler,
+        folder: str,
+        trainer,
+        epochs: int,
+        device,
+        max_grad_norm: Optional[float],
+        early_stop_steps: Optional[int]):
     dataloaders = get_dataloaders(datasets, batch_size)
     # scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
 
@@ -39,6 +39,7 @@ def train_model(model: nn.Module,
         save_dict = torch.load(save_path)
 
         model.load_state_dict(save_dict['model_state_dict'])
+        adaptor.load_state_dict(save_dict['adaptor_state_dict'])
         optimizer.load_state_dict(save_dict['optimizer_state_dict'])
 
         best_val_loss = save_dict['best_val_loss']
@@ -54,11 +55,13 @@ def train_model(model: nn.Module,
 
     since = time.perf_counter()
 
-    model = model.to(device)
     set_device_recursive(optimizer.state, device)
 
     print(model)
     print(f'Trainable parameters: {get_number_of_parameters(model)}.')
+
+    print(adaptor)
+    print(f'Trainable parameters: {get_number_of_parameters(adaptor)}.')
 
     try:
         for epoch in range(begin_epoch, begin_epoch + epochs):
@@ -66,8 +69,10 @@ def train_model(model: nn.Module,
             running_loss, running_metrics = defaultdict(float), dict()
             for phase in phases:
                 if phase == 'train':
+                    adaptor.train()
                     model.train()
                 else:
+                    adaptor.eval()
                     model.eval()
 
                 steps, predictions, running_targets = 0, list(), list()
@@ -82,13 +87,14 @@ def train_model(model: nn.Module,
                         targets = targets.to(device)
 
                     with torch.set_grad_enabled(phase == 'train'):
-                        outputs, loss = trainer.train(inputs, targets, phase)
+                        outputs, loss = trainer.train(inputs, targets)
 
                         if phase == 'train':
                             optimizer.zero_grad()
                             loss.backward()
                             if max_grad_norm is not None:
                                 nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                                nn.utils.clip_grad_norm_(adaptor.parameters(), max_grad_norm)
                             optimizer.step()
 
                     with torch.no_grad():
@@ -110,11 +116,13 @@ def train_model(model: nn.Module,
                 if phase == 'val':
                     if running_loss['val'] < best_val_loss:
                         best_val_loss = running_loss['val']
-                        save_dict.update(model_state_dict=copy.deepcopy(model.state_dict()),
-                                         epoch=epoch,
-                                         best_val_loss=best_val_loss,
-                                         optimizer_state_dict=copy.deepcopy(optimizer.state_dict()))
-                        print(f'Better model at epoch {epoch} recorded.')
+                        save_dict.update(
+                            adaptor_state_dict=copy.deepcopy(adaptor.state_dict()),
+                            model_state_dict=copy.deepcopy(model.state_dict()),
+                            epoch=epoch,
+                            best_val_loss=best_val_loss,
+                            optimizer_state_dict=copy.deepcopy(optimizer.state_dict()))
+                        print(f'A better adaptor and model at epoch {epoch} recorded.')
                     elif early_stop_steps is not None and epoch - save_dict['epoch'] > early_stop_steps:
                         raise ValueError('Early stopped.')
             if scheduler is not None:
@@ -131,20 +139,23 @@ def train_model(model: nn.Module,
     time_elapsed = time.perf_counter() - since
     print(f"cost {time_elapsed} seconds")
 
+    adaptor.load_state_dict(save_dict['adaptor_state_dict'])
     model.load_state_dict(save_dict['model_state_dict'])
 
     save_model(save_path, **save_dict)
-    print(f'model of epoch {save_dict["epoch"]} successfully saved at `{save_path}`')
+    print(f'The best adaptor and model of epoch {save_dict["epoch"]} successfully saved at `{save_path}`')
 
-    return model
+    return adaptor, model
 
 
-def test_model(model: nn.Module,
-               datasets: Dict[str, Dataset],
-               batch_size: int,
-               trainer,
-               folder: str,
-               device):
+def test_model(
+        adaptor: nn.Module,
+        model: nn.Module,
+        datasets: Dict[str, Dataset],
+        batch_size: int,
+        trainer,
+        folder: str,
+        device):
     dataloaders = get_dataloaders(datasets, batch_size)
     # scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
 
@@ -152,15 +163,14 @@ def test_model(model: nn.Module,
 
     save_dict = torch.load(save_path)
 
+    adaptor.load_state_dict(save_dict['adaptor_state_dict'])
     model.load_state_dict(save_dict['model_state_dict'])
 
-    if isinstance(device, str):
-        model = model.to(device)
-    elif isinstance(device, list):
-        model = nn.DataParallel(model, device)
-        device = f'cuda:{device[0]}'
+    model = model.to(device)
+    adaptor = adaptor.to(device)
 
     model.eval()
+    adaptor.eval()
 
     predictions, running_targets = list(), list()
     for step, (inputs, targets) in tqdm(enumerate(dataloaders['test']), 'Test model'):
@@ -172,7 +182,7 @@ def test_model(model: nn.Module,
             # targets[..., 0] = scaler.transform(targets[..., 0])
             targets = targets.to(device)
 
-            outputs, _ = trainer.train(inputs, targets, 'test')
+            outputs, _ = trainer.train(inputs, targets)
             # predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
             predictions.append(outputs.cpu().numpy())
 
@@ -190,42 +200,6 @@ def test_model(model: nn.Module,
 def save_model(path: str, **save_dict):
     os.makedirs(os.path.split(path)[0], exist_ok=True)
     torch.save(save_dict, path)
-
-
-class MultiStepWraper(nn.Module):
-
-    def __init__(self, model: nn.Module):
-        """
-        wrap a model to make multi-step predictions.
-        :param model: map inputs to a single predicting result
-        """
-        super(MultiStepWraper, self).__init__()
-        self.model = model
-
-    def forward(self,
-                inputs: torch.Tensor,
-                graph_filters: torch.Tensor,
-                n_pred: int,
-                targets: torch.Tensor = None):
-        """
-        generate multi-step predictions from single-step predicting method
-        :param inputs: tensor, [B, N_hist, N, F_in]
-        :param graph_filters: tensor, [N, K_hop, N]
-        :param n_pred: the number of predictions
-        :param targets: tensor, multi-step prediction targets, [B, N_pred, N, F_out]
-        :return: tensor, with the same shape as `targets`
-        """
-        _, n_hist, _, _ = inputs.shape
-        h, preds = inputs.clone(), list()
-        for i in range(n_pred):
-            prediction = self.model(h[:, i:i + n_hist], graph_filters)
-            preds.append(prediction)
-            if targets is None:
-                h = torch.cat([h, prediction.unsqueeze(1)], 1)
-            else:
-                h = torch.cat([h, targets[:, i:i + 1]], 1)
-                h.requires_grad_()
-        return torch.stack(preds, 1)
 
 
 class JsonEncoder(json.JSONEncoder):
@@ -266,21 +240,6 @@ def load_pickle(pickle_file):
     return pickle_data
 
 
-def node_embedding(dataset: str, embedding_dim: int, device='cpu') -> Tensor:
-    data: np.ndarray = np.load(f'data/{dataset}/train.npz')['x']
-    data = data[..., 0]
-
-    data: Tensor = torch.tensor(data, device=device, dtype=torch.float32)
-
-    import tensorly
-    from tensorly.decomposition import partial_tucker
-    tensorly.set_backend('pytorch')
-
-    core, factors = partial_tucker(data, modes=[2], ranks=[embedding_dim])
-
-    return factors[0]
-
-
 def set_device_recursive(var, device):
     for key in var:
         if isinstance(var[key], dict):
@@ -293,16 +252,7 @@ def set_device_recursive(var, device):
     return var
 
 
-def get_graph_from_sparse_matrices(nodes_num: int, matrices: List[sp.coo_matrix], device='cpu') -> dgl.DGLGraph:
-    g = dgl.DGLGraph()
-    g.add_nodes(nodes_num)
-
-    for i, a in enumerate(matrices):
-        rows = torch.tensor(a.row, dtype=torch.int64, device=device)
-        cols = torch.tensor(a.col, dtype=torch.int64, device=device)
-        vals = torch.tensor(a.data, dtype=torch.float32, device=device)
-        g.add_edges(rows, cols, {f'feat-{i}': vals})
-    g.edata['feats'] = torch.stack(list(g.edata.values()), -1)
-    for i in range(len(matrices)):
-        g.edata.pop(f'feat-{i}')
-    return g
+def set_requires_grad(models: List[nn.Module], required: bool):
+    for model in models:
+        for param in model.parameters():
+            param.requires_grad_(required)
