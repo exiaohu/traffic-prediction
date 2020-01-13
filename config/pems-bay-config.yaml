@@ -1,0 +1,59 @@
+device: 3
+data:
+  dataset: METR-LA
+  batch-size: 64
+  input_dim: 2
+  output_dim: 1
+
+train:
+  epochs: 100
+  early_stop_steps: null
+  max_grad_norm: 5
+
+optimizer:
+  name: Adam
+  Adam:
+    lr: 0.001
+    weight_decay: 0.0001
+    amsgrad: true
+  RMSprop:
+    lr: 0.01
+    weight_decay: 0.001
+
+loss:
+  name: MaskedMAELoss
+
+model:
+  name: Ours2
+  Ours2:
+    n_in: 2
+    n_out: 1
+    n_hidden: 32
+    t_pred: 12
+    n_blocks: 4
+    n_layers: 3
+    dropout: 0.0
+
+trainer:
+  n_hist: 12
+  node_dim: 8
+  dropout: 0.0
+  spatial: false
+  temporal: true
+
+scheduler:
+  name: null
+  ReduceLROnPlateau:
+    factor: 0.2
+    patience: 8
+    threshold: 0.05
+    min_lr: 0.00001
+  StepLR:
+    step_size: 10
+    gamma: 0.1
+  MultiStepLR:
+    milestones: [20, 30, 40, 50]
+    gamma: 0.1
+  CosineAnnealingLR:
+    T_max: 5
+    eta_min: 0.0000001
