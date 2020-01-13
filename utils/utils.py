@@ -3,44 +3,82 @@ import json
 import os
 import pickle
 import time
-from collections import defaultdict
 from typing import Dict, Optional, List
 
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
 from torch import nn, optim
-from torch.utils.data import Dataset
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 
-from .data import get_dataloaders
+from .data import get_dataloaders, TrafficPredictionDataset
 from .evaluate import evaluate
 
 
+class OursTrainer(object):
+    def __init__(self,
+                 model: nn.Module,
+                 loss: nn.Module,
+                 scaler,
+                 device: torch.device,
+                 optimizer,
+                 grad_clip: Optional[float]):
+        self.model = model.to(device)
+        self.loss = loss.to(device)
+        self.optimizer = optimizer
+        self.scaler = scaler
+        self.clip = grad_clip
+        self.device = device
+
+    def train(self, inputs, targets):
+        self.model.train()
+        self.optimizer.zero_grad()
+
+        predicts = self._run(inputs)
+
+        loss = self.loss(predicts, targets.to(self.device))
+        reg = get_regularization(self.model, 0.001)
+        (loss + reg).backward()
+        if self.clip is not None:
+            nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+        self.optimizer.step()
+
+        return predicts
+
+    def predict(self, inputs):
+        self.model.eval()
+        return self._run(inputs)
+
+    def _run(self, inputs):
+        inputs[..., 0] = self.scaler.transform(inputs[..., 0], 0.0)
+
+        outputs = self.model(inputs.to(self.device))
+        return self.scaler.inverse_transform(outputs, 0.0)
+
+    def load_state_dict(self, model_state_dict, optimizer_state_dict):
+        self.model.load_state_dict(model_state_dict)
+        self.optimizer.load_state_dict(optimizer_state_dict)
+        self.model = self.model.to(self.device)
+        set_device_recursive(self.optimizer.state, self.device)
+
+
 def train_model(
-        adaptor: nn.Module,
-        model: nn.Module,
-        datasets: Dict[str, Dataset],
+        datasets: Dict[str, TrafficPredictionDataset],
         batch_size: int,
-        optimizer,
-        scheduler,
         folder: str,
-        trainer,
+        trainer: OursTrainer,
+        scheduler,
         epochs: int,
-        device,
-        max_grad_norm: Optional[float],
         early_stop_steps: Optional[int]):
-    dataloaders = get_dataloaders(datasets, batch_size)
-    # scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
+    data_loaders = get_dataloaders(datasets, batch_size)
 
     save_path = os.path.join(folder, 'best_model.pkl')
 
     if os.path.exists(save_path):
         save_dict = torch.load(save_path)
 
-        model.load_state_dict(save_dict['model_state_dict'])
-        adaptor.load_state_dict(save_dict['adaptor_state_dict'])
-        optimizer.load_state_dict(save_dict['optimizer_state_dict'])
+        trainer.load_state_dict(save_dict['model_state_dict'], save_dict['optimizer_state_dict'])
 
         best_val_loss = save_dict['best_val_loss']
         begin_epoch = save_dict['epoch'] + 1
@@ -55,140 +93,89 @@ def train_model(
 
     since = time.perf_counter()
 
-    set_device_recursive(optimizer.state, device)
-
-    print(model)
-    print(f'Trainable parameters: {get_number_of_parameters(model)}.')
-
-    print(adaptor)
-    print(f'Trainable parameters: {get_number_of_parameters(adaptor)}.')
+    print(trainer.model)
+    print(f'Trainable parameters: {get_number_of_parameters(trainer.model)}.')
 
     try:
         for epoch in range(begin_epoch, begin_epoch + epochs):
 
-            running_loss, running_metrics = defaultdict(float), dict()
+            running_metrics = dict()
             for phase in phases:
-                if phase == 'train':
-                    adaptor.train()
-                    model.train()
-                else:
-                    adaptor.eval()
-                    model.eval()
 
-                steps, predictions, running_targets = 0, list(), list()
-                tqdm_loader = tqdm(enumerate(dataloaders[phase]))
-                for step, (inputs, targets) in tqdm_loader:
-                    running_targets.append(targets.numpy())
+                steps, predicts, targets = 0, list(), list()
+                for x, y in tqdm(data_loaders[phase], f'{phase.capitalize():5} {epoch}'):
+                    targets.append(y.numpy().copy())
+                    if phase == 'train':
+                        y_ = trainer.train(x, y)
+                    else:
+                        with torch.no_grad():
+                            y_ = trainer.predict(x)
 
-                    with torch.no_grad():
-                        # inputs[..., 0] = scaler.transform(inputs[..., 0])
-                        inputs = inputs.to(device)
-                        # targets[..., 0] = scaler.transform(targets[..., 0])
-                        targets = targets.to(device)
-
-                    with torch.set_grad_enabled(phase == 'train'):
-                        outputs, loss = trainer.train(inputs, targets)
-
-                        if phase == 'train':
-                            optimizer.zero_grad()
-                            loss.backward()
-                            if max_grad_norm is not None:
-                                nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-                                nn.utils.clip_grad_norm_(adaptor.parameters(), max_grad_norm)
-                            optimizer.step()
-
-                    with torch.no_grad():
-                        # predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
-                        predictions.append(outputs.cpu().numpy())
-
-                    running_loss[phase] += loss * len(targets)
-                    steps += len(targets)
-
-                    tqdm_loader.set_description(
-                        f'{phase:5} epoch: {epoch:3}, {phase:5} loss: {running_loss[phase] / steps:3.6}')
+                    predicts.append(y_.detach().cpu().numpy())
 
                     # For the issue that the CPU memory increases while training. DO NOT know why, but it works.
                     torch.cuda.empty_cache()
 
                 # 性能
-                running_metrics[phase] = evaluate(np.concatenate(predictions), np.concatenate(running_targets))
+                running_metrics[phase] = evaluate(np.concatenate(predicts), np.concatenate(targets))
 
                 if phase == 'val':
-                    if running_loss['val'] < best_val_loss:
-                        best_val_loss = running_loss['val']
+                    if running_metrics['val']['loss'] < best_val_loss:
+                        best_val_loss = running_metrics['val']['loss']
                         save_dict.update(
-                            adaptor_state_dict=copy.deepcopy(adaptor.state_dict()),
-                            model_state_dict=copy.deepcopy(model.state_dict()),
+                            model_state_dict=copy.deepcopy(trainer.model.state_dict()),
                             epoch=epoch,
                             best_val_loss=best_val_loss,
-                            optimizer_state_dict=copy.deepcopy(optimizer.state_dict()))
-                        print(f'A better adaptor and model at epoch {epoch} recorded.')
+                            optimizer_state_dict=copy.deepcopy(trainer.optimizer.state_dict()))
+                        save_model(save_path, **save_dict)
+                        print(f'A better model at epoch {epoch} recorded.')
                     elif early_stop_steps is not None and epoch - save_dict['epoch'] > early_stop_steps:
                         raise ValueError('Early stopped.')
-            if scheduler is not None:
-                scheduler.step(running_loss['train'])
 
+            loss_dict = {f'{phase} loss': running_metrics[phase].pop('loss') for phase in phases}
+            print(loss_dict)
+
+            if scheduler is not None:
+                if isinstance(scheduler, ReduceLROnPlateau):
+                    scheduler.step(loss_dict['train'])
+                else:
+                    scheduler.step()
+
+            writer.add_scalars('Loss', loss_dict, global_step=epoch)
             for metric in running_metrics['train'].keys():
                 for phase in phases:
                     for key, val in running_metrics[phase][metric].items():
                         writer.add_scalars(f'{metric}/{key}', {f'{phase}': val}, global_step=epoch)
-            loss_dict = {f'{phase} loss': running_loss[phase] / len(dataloaders[phase].dataset) for phase in phases}
-            writer.add_scalars('Loss', loss_dict, global_step=epoch)
     except (ValueError, KeyboardInterrupt) as e:
         print(e)
     time_elapsed = time.perf_counter() - since
     print(f"cost {time_elapsed} seconds")
-
-    adaptor.load_state_dict(save_dict['adaptor_state_dict'])
-    model.load_state_dict(save_dict['model_state_dict'])
-
-    save_model(save_path, **save_dict)
     print(f'The best adaptor and model of epoch {save_dict["epoch"]} successfully saved at `{save_path}`')
-
-    return adaptor, model
 
 
 def test_model(
-        adaptor: nn.Module,
-        model: nn.Module,
-        datasets: Dict[str, Dataset],
+        datasets: Dict[str, TrafficPredictionDataset],
         batch_size: int,
-        trainer,
-        folder: str,
-        device):
+        trainer: OursTrainer,
+        folder: str):
     dataloaders = get_dataloaders(datasets, batch_size)
-    # scaler = ZScoreScaler(datasets['train'].mean[0], datasets['train'].std[0])
 
-    save_path = os.path.join(folder, 'best_model.pkl')
+    saved_path = os.path.join(folder, 'best_model.pkl')
 
-    save_dict = torch.load(save_path)
-
-    adaptor.load_state_dict(save_dict['adaptor_state_dict'])
-    model.load_state_dict(save_dict['model_state_dict'])
-
-    model = model.to(device)
-    adaptor = adaptor.to(device)
-
-    model.eval()
-    adaptor.eval()
+    saved_dict = torch.load(saved_path)
+    trainer.model.load_state_dict(saved_dict['model_state_dict'])
 
     predictions, running_targets = list(), list()
-    for step, (inputs, targets) in tqdm(enumerate(dataloaders['test']), 'Test model'):
-        with torch.no_grad():
-            running_targets.append(targets.numpy())
-
-            # inputs[..., 0] = scaler.transform(inputs[..., 0])
-            inputs = inputs.to(device)
-            # targets[..., 0] = scaler.transform(targets[..., 0])
-            targets = targets.to(device)
-
-            outputs, _ = trainer.train(inputs, targets)
-            # predictions.append(scaler.inverse_transform(outputs).cpu().numpy())
-            predictions.append(outputs.cpu().numpy())
+    with torch.no_grad():
+        for inputs, targets in tqdm(dataloaders['test'], 'Test model'):
+            running_targets.append(targets.numpy().copy())
+            predicts = trainer.predict(inputs)
+            predictions.append(predicts.cpu().numpy())
 
     # 性能
     predictions, running_targets = np.concatenate(predictions), np.concatenate(running_targets)
     scores = evaluate(predictions, running_targets)
+    scores.pop('loss')
     print('test results:')
     print(json.dumps(scores, cls=JsonEncoder, indent=4))
     with open(os.path.join(folder, 'test-scores.json'), 'w+') as f:
@@ -256,3 +243,8 @@ def set_requires_grad(models: List[nn.Module], required: bool):
     for model in models:
         for param in model.parameters():
             param.requires_grad_(required)
+
+
+def get_regularization(model: nn.Module, weight_decay: float, p: float = 2.0):
+    weight_list = list(filter(lambda item: 'weight' in item[0], model.named_parameters()))
+    return weight_decay * sum(torch.norm(w, p=p) for name, w in weight_list)

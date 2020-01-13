@@ -1,6 +1,6 @@
 device: 3
 data:
-  dataset: METR-LA
+  dataset: PEMS-BAY
   batch-size: 64
   input_dim: 2
   output_dim: 1
@@ -32,6 +32,8 @@ model:
     t_pred: 12
     n_blocks: 4
     n_layers: 3
+    t_size: 2
+    expand_dims: [256]
     dropout: 0.0
 
 trainer:
@@ -39,7 +41,7 @@ trainer:
   node_dim: 8
   dropout: 0.0
   spatial: false
-  temporal: true
+  temporal: false
 
 scheduler:
   name: null

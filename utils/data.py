@@ -3,6 +3,7 @@ from typing import Dict
 
 import numpy as np
 import torch
+from torch import Tensor
 from torch.utils.data import Dataset, DataLoader
 
 
@@ -12,11 +13,17 @@ class ZScoreScaler:
         self.mean = mean
         self.std = std
 
-    def transform(self, x):
-        return (x - self.mean) / self.std
+    def transform(self, x: Tensor, nan_val: float):
+        zeros = torch.eq(x, nan_val)
+        x = (x - self.mean) / self.std
+        x[zeros] = 0.0
+        return x
 
-    def inverse_transform(self, x):
-        return x * self.std + self.mean
+    def inverse_transform(self, x: Tensor, nan_val: float):
+        zeros = torch.eq(x, nan_val)
+        x = x * self.std + self.mean
+        x[zeros] = 0.0
+        return x
 
 
 class TrafficPredictionDataset(Dataset):
@@ -37,15 +44,17 @@ class TrafficPredictionDataset(Dataset):
     def __getitem__(self, idx: int):
         x, y = self.inputs[idx][..., :self.input_dim], self.targets[idx][..., :self.output_dim]
 
-        return torch.tensor(x).float(), torch.tensor(y).float()
+        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
     @property
-    def std(self):
-        return self.inputs.std(tuple(range(len(self.inputs.shape) - 1)))
+    def std(self) -> float:
+        data = np.concatenate([self.inputs[..., :1], self.targets[..., :1]], 1)
+        return data[np.not_equal(data, 0.0)].std()
 
     @property
-    def mean(self):
-        return self.inputs.mean(tuple(range(len(self.inputs.shape) - 1)))
+    def mean(self) -> float:
+        data = np.concatenate([self.inputs[..., :1], self.targets[..., :1]], 1)
+        return data[np.not_equal(data, 0.0)].mean()
 
 
 def get_datasets(dataset: str, input_dim: int, output_dim: int) -> Dict[str, TrafficPredictionDataset]:

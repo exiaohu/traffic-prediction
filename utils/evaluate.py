@@ -1,5 +1,3 @@
-from collections import defaultdict
-
 import numpy as np
 
 
@@ -11,15 +9,15 @@ def evaluate(predictions: np.ndarray, targets: np.ndarray):
     :return: a dict [str -> float]
     """
     assert targets.shape == predictions.shape and targets.shape[1] == 12, f'{targets.shape}/{predictions.shape}'
-    n_samples = targets.shape[0]
-    scores = defaultdict(dict)
+    scores = {f'Masked {key}': dict() for key in ['MAE', 'RMSE', 'MAPE']}
     for horizon in range(12):
-        y_true = np.reshape(targets[:, horizon], (n_samples, -1))
-        y_pred = np.reshape(predictions[:, horizon], (n_samples, -1))
-        scores['masked MAE'][f'horizon-{horizon}'] = masked_mae_np(y_pred, y_true, null_val=0.0)
-        scores['masked RMSE'][f'horizon-{horizon}'] = masked_rmse_np(y_pred, y_true, null_val=0.0)
-        scores['masked MAPE'][f'horizon-{horizon}'] = masked_mape_np(y_pred, y_true, null_val=0.0) * 100.0
+        y_true = targets[:, horizon, ...]
+        y_pred = predictions[:, horizon, ...]
+        scores['Masked MAE'][f'horizon-{horizon}'] = masked_mae_np(y_pred, y_true, null_val=0.0)
+        scores['Masked RMSE'][f'horizon-{horizon}'] = masked_rmse_np(y_pred, y_true, null_val=0.0)
+        scores['Masked MAPE'][f'horizon-{horizon}'] = masked_mape_np(y_pred, y_true, null_val=0.0) * 100.0
 
+    scores['loss'] = masked_mae_np(predictions, targets, null_val=0.0)
     return scores
 
 

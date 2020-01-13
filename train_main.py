@@ -7,7 +7,7 @@ import torch
 import yaml
 
 from models import create_model
-from utils import train_model, get_optimizer, get_loss, get_scheduler, test_model, get_datasets
+import utils
 
 
 def train(_config, resume: bool = False, test: bool = False):
@@ -22,26 +22,20 @@ def train(_config, resume: bool = False, test: bool = False):
     optimizer_name = _config['optimizer']['name']
     scheduler_name = _config['scheduler']['name']
 
-    loss = get_loss(_config['loss']['name'])
+    loss = utils.get_loss(_config['loss']['name'])
 
     loss.to(device)
 
-    adaptor, model, trainer = create_model(dataset,
-                                           loss,
-                                           _config['model'][model_name],
-                                           _config['trainer'],
-                                           device)
+    model = create_model(dataset,
+                         _config['model'][model_name],
+                         _config['model']['stadaptor'],
+                         device)
 
-    params = [
-        {'params': adaptor.parameters(), 'lr': 1e-3, },
-        {'params': model.parameters()}
-    ]
-    optimizer = get_optimizer(optimizer_name, params, **_config['optimizer'][optimizer_name])
+    optimizer = utils.get_optimizer(optimizer_name, model.parameters(), **_config['optimizer'][optimizer_name])
 
+    scheduler = None
     if scheduler_name is not None:
-        scheduler = get_scheduler(scheduler_name, optimizer, **_config['scheduler'][scheduler_name])
-    else:
-        scheduler = None
+        scheduler = utils.get_scheduler(scheduler_name, optimizer, **_config['scheduler'][scheduler_name])
 
     save_folder = os.path.join('saves', dataset, _config['name'])
 
@@ -52,38 +46,36 @@ def train(_config, resume: bool = False, test: bool = False):
     with open(os.path.join(save_folder, 'config.yaml'), 'w+') as _f:
         yaml.safe_dump(_config, _f)
 
-    datasets = get_datasets(dataset, _config['data']['input_dim'], _config['data']['output_dim'])
+    datasets = utils.get_datasets(dataset, _config['data']['input_dim'], _config['data']['output_dim'])
+
+    scaler = utils.ZScoreScaler(datasets['train'].mean, datasets['train'].std)
+    trainer = utils.OursTrainer(model, loss, scaler, device, optimizer, config['max_grad_norm'])
 
     if not test:
-        adaptor, model = train_model(
-            adaptor=adaptor,
-            model=model,
+        utils.train_model(
             datasets=datasets,
             batch_size=_config['data']['batch-size'],
-            optimizer=optimizer,
-            scheduler=scheduler,
             folder=save_folder,
             trainer=trainer,
-            device=device,
-            **_config['train'])
+            scheduler=scheduler,
+            epochs=config['epochs'],
+            early_stop_steps=config['early_stop_steps']
+        )
 
-    test_model(
-        adaptor=adaptor,
-        model=model,
+    utils.test_model(
         datasets=datasets,
         batch_size=_config['data']['batch-size'],
         trainer=trainer,
-        folder=save_folder,
-        device=device)
+        folder=save_folder)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True, type=str,
                         help='Configuration filename for restoring the model.')
-    parser.add_argument('--resume', required=False, type=bool, default=False,
+    parser.add_argument('--resume', action='store_true', default=False,
                         help='if to resume a trained model?')
-    parser.add_argument('--test', required=False, type=bool, default=False,
+    parser.add_argument('--test', action='store_true', default=False,
                         help='if in the test mode?')
     parser.add_argument('--name', required=True, type=str, help='Name.')
 

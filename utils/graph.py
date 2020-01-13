@@ -28,10 +28,6 @@ def random_walk_matrix(w) -> sp.coo_matrix:
     return d_mat_inv.dot(w).tocoo()
 
 
-def reverse_random_walk_matrix(w) -> sp.coo_matrix:
-    return random_walk_matrix(w.T)
-
-
 def scaled_laplacian(w: np.ndarray, lambda_max: Optional[float] = 2., undirected: bool = True) -> sp.coo_matrix:
     if undirected:
         w = np.maximum.reduce([w, w.T])
@@ -98,14 +94,16 @@ def sparse_scipy2torch(w: sp.coo_matrix):
 
 def load_graph_data(dataset: str, graph_type: str) -> List[sp.coo_matrix]:
     _, _, adj_mx = load_pickle(os.path.join('data', dataset, 'adj_mx.pkl'))
-    if graph_type == "scalap":
+    if graph_type == 'raw':
+        adj = [sp.coo_matrix(adj_mx)]
+    elif graph_type == "scalap":
         adj = [scaled_laplacian(adj_mx)]
     elif graph_type == "normlap":
         adj = [normalized_laplacian(adj_mx)]
     elif graph_type == "transition":
         adj = [random_walk_matrix(adj_mx)]
     elif graph_type == "doubletransition":
-        adj = [random_walk_matrix(adj_mx), reverse_random_walk_matrix(adj_mx)]
+        adj = [random_walk_matrix(adj_mx), random_walk_matrix(adj_mx.T)]
     elif graph_type == "identity":
         adj = [sp.identity(adj_mx.shape[0], dtype=np.float32, format='coo')]
     else:
