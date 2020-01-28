@@ -2,7 +2,7 @@ import scipy.sparse as sp
 import torch
 from torch import Tensor, nn
 
-from networks.ours2 import Ours
+from networks.ours import Ours
 from networks.stadaptor import STAdaptor
 from utils import load_graph_data
 

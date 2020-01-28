@@ -2,6 +2,7 @@ from typing import List, Callable
 
 import torch
 from torch import nn, Tensor
+from torch.nn import functional as F
 
 
 class GraphConv(nn.Module):
@@ -16,12 +17,13 @@ class GraphConv(nn.Module):
         :param supports: tensor, [n_edge, N, N] or [n_edge, B, N, N]
         :return: tensor, [B, c_out, N, T] or [B, c_out, N]
         """
-        if len(x.shape) == 3:
+        flag = (len(x.shape) == 3)
+        if flag:
             x.unsqueeze_(-1)
 
         h = [x] + [self.nconv(x, a) for a in supports]
         h = torch.cat(h, 1)
-        return self.out(h).squeeze(-1)
+        return self.out(h).squeeze(-1) if flag else self.out(h)
 
     @staticmethod
     def nconv(x: Tensor, a: Tensor):
@@ -80,31 +82,46 @@ class SelfAttention(nn.Module):
 
 
 class STLayer(nn.ModuleList):
-    def __init__(self, n_hidden: int, edge_dim: int, t_size: int, dropout: float):
+    def __init__(self, n_hid: int, edge_dim: int, t_size: int, i_layer: int, dropout: float):
         super(STLayer, self).__init__()
         self.edge_dim = edge_dim
-        self.bn = nn.BatchNorm2d(n_hidden)
+        self.bn = nn.BatchNorm2d(n_hid)
 
-        self.residual = nn.Conv2d(n_hidden, n_hidden, kernel_size=(1, 1))
-        self.affine_conv = nn.Sequential(
-            nn.ZeroPad2d((t_size - 1, 0, 0, 0)),
-            nn.Conv2d(n_hidden, n_hidden, kernel_size=(1, t_size))
-        )
-        self.gate_conv = nn.Sequential(
-            nn.ZeroPad2d((t_size - 1, 0, 0, 0)),
-            nn.Conv2d(n_hidden, n_hidden, kernel_size=(1, t_size))
-        )
+        # stride, dilation = t_size ** (i_layer + 1), t_size ** i_layer
+        stride, dilation = 1, 1
 
-        self.spatial_conv = GraphConv(n_hidden, n_hidden, edge_dim)
+        self.residual = nn.Conv2d(n_hid, n_hid, kernel_size=(1, 1))
+        self.affine_conv = nn.Conv2d(n_hid, n_hid, kernel_size=(1, t_size), stride=(1, stride), dilation=(1, dilation))
+        self.gate_conv = nn.Conv2d(n_hid, n_hid, kernel_size=(1, t_size), stride=(1, stride), dilation=(1, dilation))
+
+        self.spatial_conv = GraphConv(n_hid, n_hid, edge_dim)
 
         self.dropout = nn.Dropout(dropout)
 
+    @staticmethod
+    def pad_inside(x: Tensor, stride: int) -> Tensor:
+        shape = (1, stride)
+        w = x.new_zeros(shape)
+        w[0, 0] = 1.0
+        return F.conv_transpose2d(x, w.expand(x.size(1), 1, *shape), stride=shape, groups=x.size(1))
+
     def forward(self, x: Tensor, supports):
+        stride = max(self.affine_conv.stride[-1], self.gate_conv.stride[-1])
+        assert stride <= x.size(-1), 't_size is too big or neural network is too deep.'
         residual = self.residual(x)
         x = torch.relu(self.bn(x))
 
         affine = self.affine_conv(x)
         gate = self.gate_conv(x)
+        if stride > 1:
+            affine = self.pad_inside(affine, stride)
+            gate = self.pad_inside(gate, stride)
+
+        if affine.size(-1) < x.size(-1):
+            affine = F.pad(affine, [0, x.size(-1) - affine.size(-1), 0, 0])
+        if gate.size(-1) < x.size(-1):
+            gate = F.pad(gate, [0, x.size(-1) - gate.size(-1), 0, 0])
+
         x = torch.tanh(affine + residual) * torch.sigmoid(gate)
 
         x = self.spatial_conv(x, supports)
@@ -117,7 +134,7 @@ class DenseBlock(nn.Module):
         super(DenseBlock, self).__init__()
         self.n_hiddens = n_hid
 
-        self.layers = nn.ModuleList([STLayer(n_hid, e_dim, t_size, dropout) for _ in range(n_layers)])
+        self.layers = nn.ModuleList([STLayer(n_hid, e_dim, t_size, i, dropout) for i in range(n_layers)])
         self.out = SelfAttention(n_hid, [64, 64], 1)
 
     def forward(self, x: Tensor, supports) -> Tensor:
@@ -136,9 +153,8 @@ class Ours(nn.Module):
                  n_out: int,
                  n_hidden: int,
                  t_pred: int,
-                 n_blocks: int,
-                 n_layers: int,
-                 t_size: int,
+                 n_layers: List[int],
+                 t_sizes: List[int],
                  edge_dim: int,
                  expand_dims: List[int],
                  dropout: float):
@@ -149,11 +165,11 @@ class Ours(nn.Module):
         self.enter = nn.Conv2d(n_in, n_hidden, kernel_size=(1, 1))
 
         self.blocks = nn.ModuleList(
-            [DenseBlock(n_layers, n_hidden, edge_dim, t_size, dropout) for _ in range(n_blocks)]
+            [DenseBlock(n_layer, n_hidden, edge_dim, tsize, dropout) for n_layer, tsize in zip(n_layers, t_sizes)]
         )
 
         self.temporal_reduce = SelfAttention(n_hidden, [64, 64], 1)
-        out_dim = n_hidden * (n_blocks + 1)
+        out_dim = n_hidden * (len(n_layers) + 1)
         self.out = StackedGraphConv([out_dim, *expand_dims, t_pred * n_out], torch.relu, edge_dim, dropout)
 
     def forward(self, inputs: Tensor, supports: Tensor):
@@ -211,11 +227,10 @@ def test_ours():
         'n_out': 1,
         't_pred': 12,
         'n_hidden': 32,
-        'n_blocks': 4,
-        'n_layers': 3,
+        'n_layers': [3, 3, 3, 3],
         'edge_dim': 2,
-        't_size': 2,
-        'expand_dims': [128, 256],
+        't_sizes': [2, 2, 2, 2],
+        'expand_dims': [256],
         'dropout': 0.3,
     }
     batch_size = 64

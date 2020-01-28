@@ -49,7 +49,7 @@ def train(_config, resume: bool = False, test: bool = False):
     datasets = utils.get_datasets(dataset, _config['data']['input_dim'], _config['data']['output_dim'])
 
     scaler = utils.ZScoreScaler(datasets['train'].mean, datasets['train'].std)
-    trainer = utils.OursTrainer(model, loss, scaler, device, optimizer, config['max_grad_norm'])
+    trainer = utils.OursTrainer(model, loss, scaler, device, optimizer, **_config['trainer'])
 
     if not test:
         utils.train_model(

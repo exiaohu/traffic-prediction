@@ -1,61 +1,75 @@
-device: 3
+device: 2
+epochs: 100
+early_stop_steps: null
+
+trainer:
+  max_grad_norm: 5
+  reg_weight_decay: 0.001
+  reg_norm: 2
+
 data:
   dataset: PEMS-BAY
   batch-size: 64
-  input_dim: 2
+  input_dim: 9
   output_dim: 1
-
-train:
-  epochs: 100
-  early_stop_steps: null
-  max_grad_norm: 5
 
 optimizer:
   name: Adam
   Adam:
     lr: 0.001
-    weight_decay: 0.0001
+    weight_decay: 0.0
     amsgrad: true
   RMSprop:
-    lr: 0.01
-    weight_decay: 0.001
+    lr: 0.001
+    weight_decay: 0.0001
 
 loss:
   name: MaskedMAELoss
 
 model:
-  name: Ours2
+  name: Ours1
   Ours2:
-    n_in: 2
+    n_in: 9
     n_out: 1
     n_hidden: 32
     t_pred: 12
-    n_blocks: 4
-    n_layers: 3
-    t_size: 2
+    n_layers: [3, 3, 3, 3]
+    t_sizes: [2, 2, 2, 2]
     expand_dims: [256]
-    dropout: 0.0
+    dropout: 0.2
+  Ours1:
+    n_in: 9
+    n_out: 1
+    n_pred: 12
+    n_residuals: 32
+    n_dilations: 32
+    n_skips: 256
+    n_ends: 512
+    kernel_size: 2
+    n_blocks: 4
+    n_layers: 2
+    dropout: 0.3
 
-trainer:
-  n_hist: 12
-  node_dim: 8
-  dropout: 0.0
-  spatial: false
-  temporal: false
+  stadaptor:
+    n_hist: 12
+    node_dim: 100
+    dropout: 0.0
+    spatial: false
+    temporal: false
 
 scheduler:
   name: null
   ReduceLROnPlateau:
     factor: 0.2
-    patience: 8
-    threshold: 0.05
+    patience: 5
+    threshold: 0.005
     min_lr: 0.00001
   StepLR:
     step_size: 10
     gamma: 0.1
   MultiStepLR:
-    milestones: [20, 30, 40, 50]
-    gamma: 0.1
+    milestones: [2, 10, 20, 50]
+    gamma: 0.3
   CosineAnnealingLR:
     T_max: 5
     eta_min: 0.0000001

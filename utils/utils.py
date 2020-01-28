@@ -23,13 +23,17 @@ class OursTrainer(object):
                  scaler,
                  device: torch.device,
                  optimizer,
-                 grad_clip: Optional[float]):
+                 reg_weight_decay: float,
+                 reg_norm: int,
+                 max_grad_norm: Optional[float]):
         self.model = model.to(device)
         self.loss = loss.to(device)
         self.optimizer = optimizer
         self.scaler = scaler
-        self.clip = grad_clip
+        self.clip = max_grad_norm
         self.device = device
+        self.norm = reg_norm
+        self.weight_decay = reg_weight_decay
 
     def train(self, inputs, targets):
         self.model.train()
@@ -38,7 +42,7 @@ class OursTrainer(object):
         predicts = self._run(inputs)
 
         loss = self.loss(predicts, targets.to(self.device))
-        reg = get_regularization(self.model, 0.001)
+        reg = get_regularization(self.model, weight_decay=self.weight_decay, p=self.norm)
         (loss + reg).backward()
         if self.clip is not None:
             nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
